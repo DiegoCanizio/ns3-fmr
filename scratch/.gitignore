@@ -1,8 +1,7 @@
-# Ignore everything on scratch by default, except the provided examples
 /*
-!.gitignore
-
-!nested-subdir/
-!subdir/
-!scratch-simulator.cc
-!CMakeLists.txt
+!/.gitignore
+!/fmr.cc
+!/fmr_ai/
+!/fmr_ai/**
+!/print-fmr-typeid.cc
+!/sim.cc

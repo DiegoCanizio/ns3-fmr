@@ -1,52 +1,36 @@
-*.diff
-*.orig
-*.patch
-*.rej
+# Build
+build/
+cmake-cache/
 
-*.o
+# Logs
+*.log
+agent.log
+agent_run_ok.log
+ns3.log
+typeid.log
+typeid_fmr.log
+
+# Outputs do ns-3
+default
+default-flowmon.txt
+
+# Resultados de experimentos
+experiments/fmr_rl/runs/
+
+# Modelos treinados
+scratch/fmr_ai/models/
+
+# Python cache
+__pycache__/
 *.pyc
 *.pyo
+*.pyd
 
-*.cwnd
-*.dat
-*.log
-*.mob
-*.pcap
-*.plt
-*.routes
-*.tr
-[D|U]l[A-Z][a-z]*Stats.txt
+# Editor
+.vscode/
 
-\#*#
-*~
+# Lock/temp
+.lock-ns3_linux_build
 
-testpy-output
-
-bindings/python/pybindgen/
-
-venv/
-
-ms_print.*
-massif.*
-coverity
-TAGS
-
-.lock-ns3_*
-.ns3rc
-
-build-dir/
-build/
-/.cproject
-/.project
-
-version.cache
-
-.gitlab-ci-local/
-.idea/
-cmake-*/
-vcpkg/
-
-.vs/
-
-# Ignore local cache used by e.g. clangd
-.cache/
+# ns-3 local config
+.ns3*
