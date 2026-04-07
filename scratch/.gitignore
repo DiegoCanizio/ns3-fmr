@@ -1,0 +1,7 @@
+/*
+!/.gitignore
+!/fmr.cc
+!/fmr_ai/
+!/fmr_ai/**
+!/print-fmr-typeid.cc
+!/sim.cc

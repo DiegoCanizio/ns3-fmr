@@ -1,0 +1,6 @@
+*
+!.gitignore
+!ai/
+!nr/
+!ai/**
+!nr/**
