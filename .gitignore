@@ -37,3 +37,5 @@ __pycache__/
 
 # venv
 .venv/
+nbuild/
+cmake-cache/
