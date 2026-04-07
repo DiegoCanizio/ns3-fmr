@@ -17,8 +17,10 @@ default-flowmon.txt
 # Resultados de experimentos
 experiments/fmr_rl/runs/
 
-# Modelos treinados
-scratch/fmr_ai/models/
+#Arquivos nas pastas de Modelos treinados
+scratch/fmr_ai/models/*
+!scratch/fmr_ai/models/*.zip
+
 
 # Python cache
 __pycache__/
