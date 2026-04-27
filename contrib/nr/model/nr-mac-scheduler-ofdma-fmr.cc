@@ -389,6 +389,11 @@ NrMacSchedulerOfdmaFmr::GetUeCompareDlFn() const
             return lTarget > rTarget;
         }
 
+        if (lhs.first->m_dlMcs != rhs.first->m_dlMcs)
+        {
+            return lhs.first->m_dlMcs > rhs.first->m_dlMcs;
+        }
+
         return lhs.first->m_rnti < rhs.first->m_rnti;
     };
 }
@@ -842,7 +847,12 @@ NrMacSchedulerOfdmaFmr::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& active
 
         if (!aiApplied)
         {
-            NS_FATAL_ERROR("FMR-RL: AI decision was not applied. Aborting instead of fallback.");
+            if (m_enableNs3Ai)
+            {
+                NS_FATAL_ERROR("FMR-RL: AI decision was not applied. Aborting instead of fallback.");
+            }
+
+            ComputeDlTargetsForBeam(ueVector, totalRbgThisBeam, alphaThisBeam);
         }
 
         for (auto& u : ueVector)
@@ -856,16 +866,29 @@ NrMacSchedulerOfdmaFmr::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& active
         bool reapingResources = true;
         while (reapingResources)
         {
-            while (!remainingRbgSet.empty())
+            auto allocateOne = [&](auto sortFn, auto eligibleFn) -> bool
             {
-                const auto prevRemaining = remainingRbgSet.size();
+                if (remainingRbgSet.empty() || ueVector.empty())
+                {
+                    return false;
+                }
 
-                SortUeVector(&ueVector, std::bind(&NrMacSchedulerOfdmaFmr::GetUeCompareDlFn, this));
+                std::sort(ueVector.begin(), ueVector.end(), sortFn);
 
                 auto schedInfoIt = ueVector.begin();
 
                 while (AdvanceToNextUeToSchedule(schedInfoIt, ueVector.end(), beamSym))
                 {
+                    auto* fmrInfo = AsFmrUeInfoPtr(schedInfoIt->first);
+
+                    if (!fmrInfo || !eligibleFn(fmrInfo, *schedInfoIt))
+                    {
+                        std::advance(schedInfoIt, 1);
+                        continue;
+                    }
+
+                    const auto prevRemaining = remainingRbgSet.size();
+
                     if (!AttemptAllocationOfCurrentResourceToUe(schedInfoIt,
                                                             remainingRbgSet,
                                                             beamSym,
@@ -876,23 +899,163 @@ NrMacSchedulerOfdmaFmr::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& active
                         continue;
                     }
 
-                    if (auto* u = AsFmrUeInfoPtr(schedInfoIt->first))
+                    if (remainingRbgSet.size() < prevRemaining)
                     {
-                        u->m_allocDlRbg += 1;
+                        fmrInfo->m_allocDlRbg += 1;
+
+                        GetFirst GetUe;
+                        for (auto& ue : ueVector)
+                        {
+                            if (GetUe(ue)->m_rnti != GetUe(*schedInfoIt)->m_rnti)
+                            {
+                                NotAssignedDlResources(ue,
+                                                    FTResources(beamSym, beamSym),
+                                                    assignedResources);
+                            }
+                        }
+
+                        return true;
                     }
 
-                    GetFirst GetUe;
-                    for (auto& ue : ueVector)
-                    {
-                        if (GetUe(ue)->m_rnti != GetUe(*schedInfoIt)->m_rnti)
-                        {
-                            NotAssignedDlResources(ue, FTResources(beamSym, beamSym), assignedResources);
-                        }
-                    }
-                    break;
+                    std::advance(schedInfoIt, 1);
                 }
 
-                if (prevRemaining == remainingRbgSet.size())
+                return false;
+            };
+
+            auto floorSort = [](const UePtrAndBufferReq& lhs,
+                                const UePtrAndBufferReq& rhs) -> bool
+            {
+                const auto* lf = AsFmrUeInfoPtr(lhs.first);
+                const auto* rf = AsFmrUeInfoPtr(rhs.first);
+
+                const uint32_t lAlloc = lf ? lf->m_allocDlRbg : 0;
+                const uint32_t rAlloc = rf ? rf->m_allocDlRbg : 0;
+
+                if ((lAlloc == 0) != (rAlloc == 0))
+                {
+                    return lAlloc == 0;
+                }
+
+                const uint32_t lTarget = lf ? lf->m_targetDlRbg : 0;
+                const uint32_t rTarget = rf ? rf->m_targetDlRbg : 0;
+
+                if (lTarget != rTarget)
+                {
+                    return lTarget > rTarget;
+                }
+
+                if (lhs.first->m_dlMcs != rhs.first->m_dlMcs)
+                {
+                    return lhs.first->m_dlMcs > rhs.first->m_dlMcs;
+                }
+
+                return lhs.first->m_rnti < rhs.first->m_rnti;
+            };
+
+            auto targetSort = [](const UePtrAndBufferReq& lhs,
+                                const UePtrAndBufferReq& rhs) -> bool
+            {
+                const auto* lf = AsFmrUeInfoPtr(lhs.first);
+                const auto* rf = AsFmrUeInfoPtr(rhs.first);
+
+                const int64_t lTarget = lf ? static_cast<int64_t>(lf->m_targetDlRbg) : 0;
+                const int64_t rTarget = rf ? static_cast<int64_t>(rf->m_targetDlRbg) : 0;
+
+                const int64_t lAlloc = lf ? static_cast<int64_t>(lf->m_allocDlRbg) : 0;
+                const int64_t rAlloc = rf ? static_cast<int64_t>(rf->m_allocDlRbg) : 0;
+
+                const int64_t lDeficit = lTarget - lAlloc;
+                const int64_t rDeficit = rTarget - rAlloc;
+
+                if (lDeficit != rDeficit)
+                {
+                    return lDeficit > rDeficit;
+                }
+
+                if (lTarget != rTarget)
+                {
+                    return lTarget > rTarget;
+                }
+
+                if (lhs.first->m_dlMcs != rhs.first->m_dlMcs)
+                {
+                    return lhs.first->m_dlMcs > rhs.first->m_dlMcs;
+                }
+
+                return lhs.first->m_rnti < rhs.first->m_rnti;
+            };
+
+            auto residualSort = [](const UePtrAndBufferReq& lhs,
+                                const UePtrAndBufferReq& rhs) -> bool
+            {
+                const auto* lf = AsFmrUeInfoPtr(lhs.first);
+                const auto* rf = AsFmrUeInfoPtr(rhs.first);
+
+                const uint32_t lAlloc = lf ? lf->m_allocDlRbg : 0;
+                const uint32_t rAlloc = rf ? rf->m_allocDlRbg : 0;
+
+                if (lAlloc != rAlloc)
+                {
+                    return lAlloc < rAlloc;
+                }
+
+                if (lhs.first->m_dlMcs != rhs.first->m_dlMcs)
+                {
+                    return lhs.first->m_dlMcs > rhs.first->m_dlMcs;
+                }
+
+                return lhs.first->m_rnti < rhs.first->m_rnti;
+            };
+
+            const uint32_t fairnessFloorRbg = 1;
+
+            // Phase 1: explicit fairness floor.
+            while (!remainingRbgSet.empty())
+            {
+                const bool changed = allocateOne(
+                    floorSort,
+                    [fairnessFloorRbg](const NrMacSchedulerUeInfoFmr* fmrInfo,
+                                    const UePtrAndBufferReq&) -> bool
+                    {
+                        return fmrInfo->m_allocDlRbg < fairnessFloorRbg;
+                    });
+
+                if (!changed)
+                {
+                    break;
+                }
+            }
+
+            // Phase 2: follow the RL target allocation.
+            while (!remainingRbgSet.empty())
+            {
+                const bool changed = allocateOne(
+                    targetSort,
+                    [](const NrMacSchedulerUeInfoFmr* fmrInfo,
+                    const UePtrAndBufferReq&) -> bool
+                    {
+                        return fmrInfo->m_allocDlRbg < fmrInfo->m_targetDlRbg;
+                    });
+
+                if (!changed)
+                {
+                    break;
+                }
+            }
+
+            // Phase 3: stable residual allocation.
+            while (!remainingRbgSet.empty())
+            {
+                const bool changed = allocateOne(
+                    residualSort,
+                    [](const NrMacSchedulerUeInfoFmr*,
+                    const UePtrAndBufferReq&) -> bool
+                    {
+                        return true;
+                    });
+
+                if (!changed)
                 {
                     break;
                 }
