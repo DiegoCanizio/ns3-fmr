@@ -944,4 +944,4 @@ NrMacSchedulerOfdmaFmr::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& active
 
 } // namespace ns3
 
-##Versão de ajuste de alocação
+
