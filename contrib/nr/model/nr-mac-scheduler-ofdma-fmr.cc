@@ -370,12 +370,23 @@ NrMacSchedulerOfdmaFmr::GetUeCompareDlFn() const
         const auto* lf = AsFmrUeInfoPtr(lhs.first);
         const auto* rf = AsFmrUeInfoPtr(rhs.first);
 
-        const uint32_t lt = lf ? lf->m_targetDlRbg : 0;
-        const uint32_t rt = rf ? rf->m_targetDlRbg : 0;
+        const int64_t lTarget = lf ? static_cast<int64_t>(lf->m_targetDlRbg) : 0;
+        const int64_t rTarget = rf ? static_cast<int64_t>(rf->m_targetDlRbg) : 0;
 
-        if (lt != rt)
+        const int64_t lAlloc = lf ? static_cast<int64_t>(lf->m_allocDlRbg) : 0;
+        const int64_t rAlloc = rf ? static_cast<int64_t>(rf->m_allocDlRbg) : 0;
+
+        const int64_t lDeficit = lTarget - lAlloc;
+        const int64_t rDeficit = rTarget - rAlloc;
+
+        if (lDeficit != rDeficit)
         {
-            return lt > rt;
+            return lDeficit > rDeficit;
+        }
+
+        if (lTarget != rTarget)
+        {
+            return lTarget > rTarget;
         }
 
         return lhs.first->m_rnti < rhs.first->m_rnti;
@@ -855,13 +866,6 @@ NrMacSchedulerOfdmaFmr::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& active
 
                 while (AdvanceToNextUeToSchedule(schedInfoIt, ueVector.end(), beamSym))
                 {
-                    auto* fmrInfo = AsFmrUeInfoPtr(schedInfoIt->first);
-                    if (fmrInfo && fmrInfo->m_allocDlRbg >= fmrInfo->m_targetDlRbg)
-                    {
-                        std::advance(schedInfoIt, 1);
-                        continue;
-                    }
-
                     if (!AttemptAllocationOfCurrentResourceToUe(schedInfoIt,
                                                             remainingRbgSet,
                                                             beamSym,
