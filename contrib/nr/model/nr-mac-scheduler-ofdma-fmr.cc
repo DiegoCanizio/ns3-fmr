@@ -364,7 +364,22 @@ std::function<bool(const NrMacSchedulerNs3::UePtrAndBufferReq& lhs,
                    const NrMacSchedulerNs3::UePtrAndBufferReq& rhs)>
 NrMacSchedulerOfdmaFmr::GetUeCompareDlFn() const
 {
-    return NrMacSchedulerOfdmaRR::GetUeCompareDlFn();
+    return [](const NrMacSchedulerNs3::UePtrAndBufferReq& lhs,
+              const NrMacSchedulerNs3::UePtrAndBufferReq& rhs) -> bool
+    {
+        const auto* l = AsFmrUeInfoPtr(lhs.first);
+        const auto* r = AsFmrUeInfoPtr(rhs.first);
+
+        const uint32_t lt = l ? l->m_targetDlRbg : 0;
+        const uint32_t rt = r ? r->m_targetDlRbg : 0;
+
+        if (lt != rt)
+        {
+            return lt > rt;
+        }
+
+        return lhs.first->m_rnti < rhs.first->m_rnti;
+    };
 }
 
 void
@@ -816,7 +831,7 @@ NrMacSchedulerOfdmaFmr::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& active
 
         if (!aiApplied)
         {
-            ComputeDlTargetsForBeam(ueVector, totalRbgThisBeam, alphaThisBeam);
+            NS_FATAL_ERROR("FMR-RL: AI decision was not applied. Aborting instead of falling back.");
         }
 
         for (auto& u : ueVector)
@@ -840,6 +855,12 @@ NrMacSchedulerOfdmaFmr::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& active
 
                 while (AdvanceToNextUeToSchedule(schedInfoIt, ueVector.end(), beamSym))
                 {
+                    auto* fmrInfo = AsFmrUeInfoPtr(schedInfoIt->first);
+                    if (fmrInfo && fmrInfo->m_allocDlRbg >= fmrInfo->m_targetDlRbg)
+                    {
+                        std::advance(schedInfoIt, 1);
+                        continue;
+                    }
                     if (!AttemptAllocationOfCurrentResourceToUe(schedInfoIt,
                                                                remainingRbgSet,
                                                                beamSym,
