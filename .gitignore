@@ -41,3 +41,4 @@ __pycache__/
 .venv/
 nbuild/
 cmake-cache/
+compare_runs/
