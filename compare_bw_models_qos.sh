@@ -44,11 +44,11 @@ bw_to_hz() {
 tau_for_bw() {
   local BW_MHZ="$1"
   case "${BW_MHZ}" in
-    10)  echo "${TAU_10:-0.70}" ;;
-    20)  echo "${TAU_20:-0.70}" ;;
-    50)  echo "${TAU_50:-0.70}" ;;
-    100) echo "${TAU_100:-0.70}" ;;
-    *)   echo "${TAU:-0.70}" ;;
+    10)  echo "${TAU_10:-0.65}" ;;
+    20)  echo "${TAU_20:-0.65}" ;;
+    50)  echo "${TAU_50:-0.65}" ;;
+    100) echo "${TAU_100:-0.65}" ;;
+    *)   echo "${TAU:-0.65}" ;;
   esac
 }
 
