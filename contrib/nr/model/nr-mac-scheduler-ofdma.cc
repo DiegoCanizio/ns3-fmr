@@ -38,6 +38,30 @@ NrMacSchedulerOfdma::GetTypeId()
                                                           "ROUND_ROBIN",
                                                           SymPerBeamType::PROPORTIONAL_FAIR,
                                                           "PROPORTIONAL_FAIR"))
+            .AddAttribute("EnableCommonSlotCsv",
+                        "Enable OFDMA slot allocation CSV (common for all schedulers).",
+                        BooleanValue(false),
+                        MakeBooleanAccessor(&NrMacSchedulerOfdma::m_enableCommonSlotCsv),
+                        MakeBooleanChecker())
+
+            .AddAttribute("CommonSlotCsvPath",
+                        "Path for OFDMA slot allocation CSV.",
+                        StringValue("slot_log_common.csv"),
+                        MakeStringAccessor(&NrMacSchedulerOfdma::m_commonSlotCsvPath),
+                        MakeStringChecker())
+
+            .AddAttribute("CommonSlotCsvAppend",
+                        "Append to CSV instead of overwrite.",
+                        BooleanValue(false),
+                        MakeBooleanAccessor(&NrMacSchedulerOfdma::m_commonSlotCsvAppend),
+                        MakeBooleanChecker())
+
+            .AddAttribute("CommonSlotCsvFlush",
+                        "Flush CSV after each write.",
+                        BooleanValue(true),
+                        MakeBooleanAccessor(&NrMacSchedulerOfdma::m_commonSlotCsvFlush),
+                        MakeBooleanChecker())
+                                                        
             .AddTraceSource(
                 "SymPerBeam",
                 "Number of assigned symbol per beam. Gets called every time an assignment is made",
@@ -50,6 +74,63 @@ NrMacSchedulerOfdma::NrMacSchedulerOfdma()
     : NrMacSchedulerTdma()
 {
 }
+
+void
+NrMacSchedulerOfdma::WriteCommonSlotCsv(
+    const BeamId& beamId,
+    const std::vector<UePtrAndBufferReq>& ueVector) const
+{
+    if (!m_enableCommonSlotCsv)
+    {
+        return;
+    }
+
+    std::ofstream out;
+    auto mode = (m_commonSlotCsvAppend || m_commonSlotCsvHeaderWritten)
+                    ? std::ofstream::out | std::ofstream::app
+                    : std::ofstream::out | std::ofstream::trunc;
+
+    out.open(m_commonSlotCsvPath, mode);
+    if (!out.is_open())
+    {
+        NS_LOG_WARN("Cannot open CSV: " << m_commonSlotCsvPath);
+        return;
+    }
+
+    if (!m_commonSlotCsvHeaderWritten && !m_commonSlotCsvAppend)
+    {
+        out << "time_s,slot,beam_id,rnti,dl_mcs,buf_req,alloc_rbg\n";
+        m_commonSlotCsvHeaderWritten = true;
+    }
+
+    const double now = Simulator::Now().GetSeconds();
+
+    for (const auto& ue : ueVector)
+    {
+        const auto& ueInfo = ue.first;
+
+        uint32_t alloc = 0;
+
+        // 🔴 ESTE É O PONTO CRÍTICO
+        // Campo real usado pelo ns-3 NR:
+        alloc = ueInfo->m_dlRBG;  
+
+        out << std::fixed << std::setprecision(6)
+            << now << ","
+            << m_slotAllocInfo.m_sfnSf.GetSlot() << ","
+            << beamId << ","
+            << ueInfo->m_rnti << ","
+            << static_cast<uint32_t>(ueInfo->m_dlMcs) << ","
+            << ue.second << ","
+            << alloc << "\n";
+    }
+
+    if (m_commonSlotCsvFlush)
+    {
+        out.flush();
+    }
+}
+
 
 void
 NrMacSchedulerOfdma::SetSymPerBeamType(SymPerBeamType type)
@@ -507,7 +588,14 @@ NrMacSchedulerOfdma::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl)
             }
         }
     }
+    // ===== COMMON SLOT CSV LOG =====
+    for (const auto& beam : symPerBeam)
+    {
+        const BeamId& beamId = beam.first;
+        const auto& ueVector = beam.second;
 
+        WriteCommonSlotCsv(beamId, ueVector);
+    }
     return symPerBeam;
 }
 

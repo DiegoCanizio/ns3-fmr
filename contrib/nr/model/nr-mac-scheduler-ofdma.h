@@ -231,5 +231,15 @@ class NrMacSchedulerOfdma : public NrMacSchedulerTdma
     Ptr<NrMacSchedulerOfdmaSymbolPerBeam> m_symPerBeam; //!< Holds a symbol per beam allocator
     /// Make it friend of the test case, so that the test case can access m_symPerBeam
     friend class NrSchedOfdmaSymbolPerBeamTestCase;
+
+    // === CSV COMMON LOG ===
+    bool m_enableCommonSlotCsv{false};
+    std::string m_commonSlotCsvPath{"slot_log_common.csv"};
+    bool m_commonSlotCsvAppend{false};
+    bool m_commonSlotCsvFlush{true};
+    mutable bool m_commonSlotCsvHeaderWritten{false};
+
+    void WriteCommonSlotCsv(const BeamId& beamId,
+                            const std::vector<UePtrAndBufferReq>& ueVector) const;
 };
 } // namespace ns3

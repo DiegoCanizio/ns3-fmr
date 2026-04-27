@@ -19,6 +19,27 @@ def jain_index(values):
         return 0.0
     return float((s * s) / (n * ss))
 
+def load_jain_rbg_from_slot_log(path: Path) -> float:
+    if not path.exists():
+        return float("nan")
+
+    df = pd.read_csv(path)
+
+    required = {"slot", "rnti", "alloc_rbg"}
+    if not required.issubset(df.columns):
+        return float("nan")
+
+    jains = []
+
+    for _, g in df.groupby("slot"):
+        alloc = g["alloc_rbg"].to_numpy(dtype=float)
+        if alloc.size > 0:
+            jains.append(jain_index(alloc))
+
+    if not jains:
+        return float("nan")
+
+    return float(pd.Series(jains).mean())
 
 def discover_bw_dirs(run_dir: Path):
     out = [p for p in run_dir.iterdir() if p.is_dir() and p.name.startswith("bw")]
@@ -38,6 +59,9 @@ def load_points(run_dir: Path) -> pd.DataFrame:
             df = pd.read_csv(path)
             thr = df["throughput_mbps"]
 
+            slot_path = bw_dir / mode / f"slot_log_{mode}.csv"
+            jain_rbg = load_jain_rbg_from_slot_log(slot_path)
+
             rows.append({
                 "bandwidth": bw_dir.name,
                 "mode": mode,
@@ -45,7 +69,7 @@ def load_points(run_dir: Path) -> pd.DataFrame:
                 "mean_flow_throughput_mbps": float(thr.mean()),
                 "min_flow_throughput_mbps": float(thr.min()),
                 "p5_flow_throughput_mbps": float(thr.quantile(0.05)),
-                "jain_flow_throughput": jain_index(thr),
+                "jain_rbg": jain_rbg,
                 "mean_delay_ms": float(df["mean_delay_ms"].mean()),
                 "mean_loss_ratio": float(df["loss_ratio"].mean()),
             })
@@ -76,7 +100,7 @@ def plot_tradeoff(df: pd.DataFrame, out_dir: Path):
         for _, row in sub.iterrows():
             mode = row["mode"]
             ax.scatter(
-                row["jain_flow_throughput"],
+                row["jain_RBG"],
                 row["aggregate_throughput_mbps"],
                 marker=markers.get(mode, "o"),
                 s=120,
@@ -86,7 +110,7 @@ def plot_tradeoff(df: pd.DataFrame, out_dir: Path):
             ax.annotate(
                 labels.get(mode, mode),
                 (
-                    row["jain_flow_throughput"],
+                    row["jain_RBG"],
                     row["aggregate_throughput_mbps"],
                 ),
                 textcoords="offset points",
@@ -94,7 +118,7 @@ def plot_tradeoff(df: pd.DataFrame, out_dir: Path):
                 fontsize=11,
             )
 
-        ax.set_xlabel("Jain index over flow throughput", fontsize=13)
+        ax.set_xlabel("Jain index over RBG Alloc", fontsize=13)
         ax.set_ylabel("Aggregate throughput (Mbps)", fontsize=13)
         ax.set_title(f"Throughput-fairness trade-off — {bw}", fontsize=15)
         ax.grid(True, linestyle="--", alpha=0.4)
