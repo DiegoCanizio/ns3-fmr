@@ -16,6 +16,9 @@
 
 #include <algorithm>
 #include <random>
+#include <iomanip>
+#include <fstream>
+
 
 namespace ns3
 {
@@ -80,7 +83,7 @@ NrMacSchedulerOfdma::WriteCommonSlotCsv(
     const BeamId& beamId,
     const std::vector<UePtrAndBufferReq>& ueVector) const
 {
-    if (!m_enableCommonSlotCsv)
+    if (!m_enableCommonSlotCsv || m_commonSlotCsvPath.empty())
     {
         return;
     }
@@ -99,7 +102,7 @@ NrMacSchedulerOfdma::WriteCommonSlotCsv(
 
     if (!m_commonSlotCsvHeaderWritten && !m_commonSlotCsvAppend)
     {
-        out << "time_s,slot,beam_id,rnti,dl_mcs,buf_req,alloc_rbg\n";
+        out << "time_s,beam_id,rnti,dl_mcs,buf_req,alloc_rbg\n";
         m_commonSlotCsvHeaderWritten = true;
     }
 
@@ -108,16 +111,10 @@ NrMacSchedulerOfdma::WriteCommonSlotCsv(
     for (const auto& ue : ueVector)
     {
         const auto& ueInfo = ue.first;
-
-        uint32_t alloc = 0;
-
-        // 🔴 ESTE É O PONTO CRÍTICO
-        // Campo real usado pelo ns-3 NR:
-        alloc = ueInfo->m_dlRBG;  
+        const uint32_t alloc = static_cast<uint32_t>(ueInfo->m_dlRBG.size());
 
         out << std::fixed << std::setprecision(6)
             << now << ","
-            << m_slotAllocInfo.m_sfnSf.GetSlot() << ","
             << beamId << ","
             << ueInfo->m_rnti << ","
             << static_cast<uint32_t>(ueInfo->m_dlMcs) << ","
@@ -557,15 +554,15 @@ NrMacSchedulerOfdma::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl)
                 NrFhControl::FhControlMethod::OptimizeMcs)
             {
                 GetFirst GetUe;
-                for (auto& schedInfoIt : GetUeVector(el)) // over all UEs with data
+                for (auto& schedInfoIt : GetUeVector(el))
                 {
-                    if (!GetUe(schedInfoIt)->m_dlRBG.empty()) // UEs with an actual allocation
+                    if (!GetUe(schedInfoIt)->m_dlRBG.empty())
                     {
                         uint8_t maxMcsAssignable = m_nrFhSchedSapProvider->GetMaxMcsAssignable(
                             GetBwpId(),
                             GetUe(schedInfoIt)->m_dlRBG.size(),
                             GetUe(schedInfoIt)->m_rnti,
-                            GetUe(schedInfoIt)->m_dlRank); // max MCS index assignable
+                            GetUe(schedInfoIt)->m_dlRank);
 
                         NS_LOG_DEBUG("UE " << GetUe(schedInfoIt)->m_rnti
                                            << " MCS from sched: " << GetUe(schedInfoIt)->GetDlMcs()
@@ -587,15 +584,11 @@ NrMacSchedulerOfdma::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl)
                                                             availableRbgs);
             }
         }
-    }
-    // ===== COMMON SLOT CSV LOG =====
-    for (const auto& beam : symPerBeam)
-    {
-        const BeamId& beamId = beam.first;
-        const auto& ueVector = beam.second;
 
-        WriteCommonSlotCsv(beamId, ueVector);
+        // ===== COMMON SLOT CSV LOG =====
+        WriteCommonSlotCsv(GetBeamId(el), ueVector);
     }
+
     return symPerBeam;
 }
 
