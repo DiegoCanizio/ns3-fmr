@@ -21,20 +21,26 @@ def jain_index(values):
 
 def load_jain_rbg_from_slot_log(path: Path) -> float:
     if not path.exists():
+        print(f"[WARN] missing slot log: {path}")
         return float("nan")
 
     df = pd.read_csv(path)
 
-    required = {"slot", "rnti", "alloc_rbg"}
+    required = {"time_s", "beam_id", "rnti", "alloc_rbg"}
     if not required.issubset(df.columns):
+        print(f"[WARN] invalid slot log columns: {path}")
         return float("nan")
 
     jains = []
 
-    for _, g in df.groupby("slot"):
+    for _, g in df.groupby(["time_s", "beam_id"], sort=False):
         alloc = g["alloc_rbg"].to_numpy(dtype=float)
-        if alloc.size > 0:
-            jains.append(jain_index(alloc))
+
+        # ignora linhas sem alocação útil
+        if alloc.size == 0:
+            continue
+
+        jains.append(jain_index(alloc))
 
     if not jains:
         return float("nan")
@@ -51,7 +57,8 @@ def load_points(run_dir: Path) -> pd.DataFrame:
 
     for bw_dir in discover_bw_dirs(run_dir):
         for mode in MODES:
-            path = bw_dir / mode / f"flow_summary_{mode}.csv"
+            slot_path = bw_dir / mode / f"slot_log_{mode}.csv"
+            jain_rbg = load_jain_rbg_from_slot_log(slot_path)
             if not path.exists():
                 print(f"[WARN] missing: {path}")
                 continue
