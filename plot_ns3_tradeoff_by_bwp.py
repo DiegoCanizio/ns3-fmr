@@ -59,7 +59,7 @@ def load_points(run_dir: Path) -> pd.DataFrame:
         for mode in MODES:
             slot_path = bw_dir / mode / f"slot_log_{mode}.csv"
             jain_rbg = load_jain_rbg_from_slot_log(slot_path)
-            if not path.exists():
+            if not slot_path.exists():
                 print(f"[WARN] missing: {path}")
                 continue
 
