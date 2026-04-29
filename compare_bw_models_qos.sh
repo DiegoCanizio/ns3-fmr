@@ -9,7 +9,7 @@ RUN_DIR="${BASE_DIR}/compare_runs/${RUN_ID}"
 
 BW_LIST="${BW_LIST:-10}"
 
-NUM_DL_FLOWS_PER_UE="${NUM_DL_FLOWS_PER_UE:-1}"
+NUM_DL_FLOWS_PER_UE="${NUM_DL_FLOWS_PER_UE:-10}"
 
 SIM_TIME="${SIM_TIME:-5s}"
 RMIN="${RMIN:-20}"
@@ -21,7 +21,7 @@ VMAX="${VMAX:-1.5}"
 BOUNDS="${BOUNDS:-200}"
 STEPDIST="${STEPDIST:-5}"
 
-LAMBDA="${LAMBDA:-200}"
+LAMBDA="${LAMBDA:-600}"
 UDP_PACKET_SIZE="${UDP_PACKET_SIZE:-3000}"
 
 ENABLE_SLOT_CSV="${ENABLE_SLOT_CSV:-1}"
@@ -76,7 +76,10 @@ run_mode() {
   "${BIN}" \
     --schedulerMode="${MODE}" \
     --EnableNs3Ai=0 \
-    --EnableSlotCsv=0 \
+    --EnableSlotCsv="${ENABLE_SLOT_CSV}" \
+    --SlotCsvPath="${MODE_DIR}/slot_log_${MODE}.csv" \
+    --SlotCsvAppend=0 \
+    --SlotCsvFlush=1 \
     --FmrTau="${TAU_BW}" \
     --simTime="${SIM_TIME}" \
     --bandwidth="${BW_HZ}" \
