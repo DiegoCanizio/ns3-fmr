@@ -147,6 +147,14 @@ run_fmr_rl() {
     --deterministic 1 \
     --print-every 50 \
     --wait-seconds 120 \
+    --n-ues 9 \
+    --obs-dim 29 \
+    --act-dim 10 \
+    --a-min 0.80 \
+    --a-max 0.98 \
+    --alpha-temp 0.70 \
+    --tau "${TAU_BW}" \
+    --default-alpha 0.80 \
     2>&1 | tee "${MODE_DIR}/agent_${MODE}.log" &
 
   local AGENT_PID=$!
