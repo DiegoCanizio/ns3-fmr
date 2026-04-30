@@ -3,22 +3,44 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import numpy as np
 
 
 MODES = ["rr", "pf", "mr", "fmr_rl"]
+LABELS = {"rr": "RR", "pf": "PF", "mr": "MR", "fmr_rl": "FMR-RL"}
+MARKERS = {"rr": "o", "pf": "s", "mr": "^", "fmr_rl": "D"}
 
 
-def jain_index(values):
-    x = pd.Series(values, dtype="float64")
-    s = x.sum()
-    ss = (x ** 2).sum()
-    n = len(x)
-    if n == 0 or ss == 0:
+def jain_index(values) -> float:
+    x = np.asarray(values, dtype=float)
+    if x.size == 0:
         return 0.0
-    return float((s * s) / (n * ss))
+    s = float(x.sum())
+    ss = float((x ** 2).sum())
+    if s <= 0.0 or ss <= 0.0:
+        return 0.0
+    return float((s * s) / (len(x) * ss))
+
+
+def discover_bw_dirs(run_dir: Path):
+    out = [p for p in run_dir.iterdir() if p.is_dir() and p.name.startswith("bw")]
+    return sorted(out, key=lambda p: int(p.name.replace("bw", "")))
+
+
+def get_all_rntis_from_rr(bw_dir: Path) -> list[int]:
+    rr_path = bw_dir / "rr" / "slot_log_rr.csv"
+    if not rr_path.exists():
+        raise FileNotFoundError(f"Missing RR slot log used as RNTI reference: {rr_path}")
+
+    df = pd.read_csv(rr_path)
+    if "rnti" not in df.columns:
+        raise ValueError(f"RR slot log has no rnti column: {rr_path}")
+
+    return sorted(int(x) for x in df["rnti"].unique())
+
 
 def load_jain_rbg_from_slot_log(path: Path, all_rntis: list[int]) -> float:
     if not path.exists():
@@ -41,81 +63,83 @@ def load_jain_rbg_from_slot_log(path: Path, all_rntis: list[int]) -> float:
             .reindex(all_rntis, fill_value=0)
             .to_numpy(dtype=float)
         )
-
         jains.append(jain_index(alloc))
 
-    return float(pd.Series(jains).mean()) if jains else float("nan")
-
-def discover_bw_dirs(run_dir: Path):
-    out = [p for p in run_dir.iterdir() if p.is_dir() and p.name.startswith("bw")]
-    return sorted(out, key=lambda p: int(p.name.replace("bw", "")))
+    return float(np.mean(jains)) if jains else float("nan")
 
 
-def jain(x):
-    x = np.array(x)
-    if np.sum(x) == 0:
-        return 0.0
-    return (np.sum(x) ** 2) / (len(x) * np.sum(x ** 2))
+def load_mean_rbg_per_ue(slot_path: Path, all_rntis: list[int]) -> pd.Series:
+    df = pd.read_csv(slot_path)
 
+    required = {"time_s", "beam_id", "rnti", "alloc_rbg"}
+    if not required.issubset(df.columns):
+        raise ValueError(f"Invalid slot log columns: {slot_path}")
 
-def load_points(run_dir):
-    run_dir = Path(run_dir)
+    per_slot = (
+        df.groupby(["time_s", "beam_id", "rnti"])["alloc_rbg"]
+        .sum()
+        .reset_index()
+    )
 
     rows = []
-    for bw_dir in sorted(run_dir.glob("bw*")):
+    for _, g in per_slot.groupby(["time_s", "beam_id"], sort=False):
+        alloc = (
+            g.groupby("rnti")["alloc_rbg"]
+            .sum()
+            .reindex(all_rntis, fill_value=0)
+        )
+        rows.append(alloc)
+
+    if not rows:
+        return pd.Series(0.0, index=all_rntis)
+
+    mat = pd.DataFrame(rows)
+    return mat.mean(axis=0).reindex(all_rntis, fill_value=0)
+
+
+def load_points(run_dir: Path) -> pd.DataFrame:
+    rows = []
+
+    for bw_dir in discover_bw_dirs(run_dir):
         bandwidth = bw_dir.name
-        rr_slot_path = bw_dir / "rr" / "slot_log_rr.csv"
-        df_rr_slot = pd.read_csv(rr_slot_path)
-        all_rntis = sorted(df_rr_slot["rnti"].unique())
-        print(f"[INFO] {bw_dir.name} all_rntis = {all_rntis}")
+        all_rntis = get_all_rntis_from_rr(bw_dir)
+        print(f"[INFO] {bandwidth} all_rntis = {all_rntis}")
 
-    for mode_dir in bw_dir.iterdir():
-        mode = mode_dir.name
+        for mode in MODES:
+            mode_dir = bw_dir / mode
+            slot_path = mode_dir / f"slot_log_{mode}.csv"
+            flow_path = mode_dir / f"flow_summary_{mode}.csv"
 
-        slot_path = mode_dir / f"slot_log_{mode}.csv"
-        slot_path = mode_dir / f"slot_log_{mode}.csv"
+            jain_rbg = load_jain_rbg_from_slot_log(slot_path, all_rntis)
+            if pd.isna(jain_rbg):
+                continue
 
-        jain_rbg = load_jain_rbg_from_slot_log(slot_path, all_rntis)
+            if not flow_path.exists():
+                print(f"[WARN] missing flow summary: {flow_path}")
+                continue
 
-        if pd.isna(jain_rbg):
-            continue
-        flow_path = mode_dir / f"flow_summary_{mode}.csv"
+            df_flow = pd.read_csv(flow_path)
+            if "throughput_mbps" not in df_flow.columns:
+                print(f"[WARN] invalid flow summary: {flow_path}")
+                continue
 
-        if not flow_path.exists():
-            print(f"[WARN] missing flow summary: {flow_path}")
-            continue
+            thr = df_flow["throughput_mbps"]
 
-        df_flow = pd.read_csv(flow_path)
-        thr = df_flow["throughput_mbps"]
-
-        rows.append({
-            "bandwidth": bandwidth,
-            "mode": mode,
-            "aggregate_throughput_mbps": thr.sum(),
-            "mean_flow_throughput_mbps": thr.mean(),
-            "min_flow_throughput_mbps": thr.min(),
-            "p5_flow_throughput_mbps": thr.quantile(0.05),
-            "jain_rbg": jain_rbg,
-        })
+            rows.append({
+                "bandwidth": bandwidth,
+                "mode": mode,
+                "aggregate_throughput_mbps": float(thr.sum()),
+                "mean_flow_throughput_mbps": float(thr.mean()),
+                "min_flow_throughput_mbps": float(thr.min()),
+                "p5_flow_throughput_mbps": float(thr.quantile(0.05)),
+                "jain_rbg": float(jain_rbg),
+            })
 
     return pd.DataFrame(rows)
 
+
 def plot_tradeoff(df: pd.DataFrame, out_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    labels = {
-        "rr": "RR",
-        "pf": "PF",
-        "mr": "MR",
-        "fmr_rl": "FMR-RL",
-    }
-
-    markers = {
-        "rr": "o",
-        "pf": "s",
-        "mr": "^",
-        "fmr_rl": "D",
-    }
 
     for bw, sub in df.groupby("bandwidth"):
         fig, ax = plt.subplots(figsize=(7.5, 5.2))
@@ -125,31 +149,26 @@ def plot_tradeoff(df: pd.DataFrame, out_dir: Path):
             ax.scatter(
                 row["jain_rbg"],
                 row["aggregate_throughput_mbps"],
-                marker=markers.get(mode, "o"),
+                marker=MARKERS.get(mode, "o"),
                 s=120,
-                label=labels.get(mode, mode),
+                label=LABELS.get(mode, mode),
             )
-
             ax.annotate(
-                labels.get(mode, mode),
-                (
-                    row["jain_rbg"],
-                    row["aggregate_throughput_mbps"],
-                ),
+                LABELS.get(mode, mode),
+                (row["jain_rbg"], row["aggregate_throughput_mbps"]),
                 textcoords="offset points",
                 xytext=(6, 6),
                 fontsize=11,
             )
 
-        ax.set_xlabel("Jain index over RBG Alloc", fontsize=13)
+        ax.set_xlabel("Mean slot-level Jain index over RBG allocation", fontsize=13)
         ax.set_ylabel("Aggregate throughput (Mbps)", fontsize=13)
         ax.set_title(f"Throughput-fairness trade-off — {bw}", fontsize=15)
         ax.grid(True, linestyle="--", alpha=0.4)
         ax.tick_params(axis="both", labelsize=11)
-
         ax.legend(fontsize=11, frameon=True)
-        plt.tight_layout()
 
+        plt.tight_layout()
         out_png = out_dir / f"tradeoff_{bw}.png"
         fig.savefig(out_png, dpi=300)
         plt.close(fig)
@@ -160,94 +179,25 @@ def plot_tradeoff(df: pd.DataFrame, out_dir: Path):
     print(f"[OK] saved: {summary_csv}")
 
 
-def plot_mean_rbg_per_ue(run_dir, plots_dir):
-    run_dir = Path(run_dir)
-
-    for bw_dir in sorted(run_dir.glob("bw*")):
-        bandwidth = bw_dir.name
-
-        plt.figure(figsize=(10, 5))
-
-        for mode_dir in sorted(bw_dir.iterdir()):
-            mode = mode_dir.name
-
-            slot_path = mode_dir / f"slot_log_{mode}.csv"
-
-            if not slot_path.exists():
-                print(f"[WARN] missing slot log: {slot_path}")
-                continue
-
-            df = pd.read_csv(slot_path)
-
-            # média de RBG por UE
-            ue_mean = (
-                df.groupby("rnti")["alloc_rbg"]
-                .mean()
-                .sort_index()
-            )
-
-            plt.plot(
-                ue_mean.index,
-                ue_mean.values,
-                marker="o",
-                label=mode
-            )
-
-        plt.xlabel("UE (RNTI)")
-        plt.ylabel("Mean allocated RBG")
-        plt.title(f"Mean RBG allocation per UE ({bandwidth})")
-        plt.grid(True)
-        plt.legend()
-
-        out = plots_dir / f"mean_rbg_per_ue_{bandwidth}.png"
-        plt.savefig(out, dpi=300, bbox_inches="tight")
-        plt.close()
-
-        print(f"[OK] saved: {out}")
-
-def plot_grouped_mean_rbg_per_ue(run_dir, plots_dir):
-    run_dir = Path(run_dir)
+def plot_grouped_mean_rbg_per_ue(run_dir: Path, plots_dir: Path):
     plots_dir.mkdir(parents=True, exist_ok=True)
 
-    mode_order = ["rr", "pf", "mr", "fmr_rl"]
-
-    for bw_dir in sorted(run_dir.glob("bw*")):
+    for bw_dir in discover_bw_dirs(run_dir):
         bandwidth = bw_dir.name
-        records = []
+        all_rntis = get_all_rntis_from_rr(bw_dir)
 
-        for mode in mode_order:
+        data = {}
+        for mode in MODES:
             slot_path = bw_dir / mode / f"slot_log_{mode}.csv"
-
             if not slot_path.exists():
                 print(f"[WARN] missing slot log: {slot_path}")
                 continue
+            data[mode] = load_mean_rbg_per_ue(slot_path, all_rntis)
 
-            df = pd.read_csv(slot_path)
-
-            if "rnti" not in df.columns or "alloc_rbg" not in df.columns:
-                print(f"[WARN] invalid slot log columns: {slot_path}")
-                continue
-
-            ue_mean = (
-                df.groupby("rnti")["alloc_rbg"]
-                .mean()
-                .reset_index()
-                .rename(columns={"alloc_rbg": "mean_alloc_rbg"})
-            )
-
-            ue_mean["mode"] = mode
-            records.append(ue_mean)
-
-        if not records:
+        if not data:
             continue
 
-        df_all = pd.concat(records, ignore_index=True)
-
-        pivot = (
-            df_all.pivot(index="rnti", columns="mode", values="mean_alloc_rbg")
-            .reindex(columns=[m for m in mode_order if m in df_all["mode"].unique()])
-            .sort_index()
-        )
+        pivot = pd.DataFrame(data).reindex(index=all_rntis)
 
         fig, ax = plt.subplots(figsize=(11, 5.5))
 
@@ -261,13 +211,13 @@ def plot_grouped_mean_rbg_per_ue(run_dir, plots_dir):
                 x + offset,
                 pivot[mode].values,
                 width=width,
-                label=mode.upper() if mode != "fmr_rl" else "FMR-RL",
+                label=LABELS.get(mode, mode),
             )
 
         ax.set_xticks(x)
         ax.set_xticklabels([str(rnti) for rnti in pivot.index])
         ax.set_xlabel("UE (RNTI)")
-        ax.set_ylabel("Mean allocated RBGs")
+        ax.set_ylabel("Mean allocated RBGs per slot")
         ax.set_title(f"Mean RBG allocation per UE — {bandwidth}")
         ax.grid(True, axis="y", linestyle="--", alpha=0.35)
         ax.legend(frameon=True)
@@ -297,11 +247,10 @@ def main():
 
     df = load_points(run_dir)
     if df.empty:
-        raise RuntimeError("Nenhum flow_summary encontrado.")
+        raise RuntimeError("Nenhum dado encontrado.")
 
     plots_dir = run_dir / "plots"
     plot_tradeoff(df, plots_dir)
-    plot_mean_rbg_per_ue(run_dir, plots_dir)
     plot_grouped_mean_rbg_per_ue(run_dir, plots_dir)
 
     print("\n=== POINTS ===")
