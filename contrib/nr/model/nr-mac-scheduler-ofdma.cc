@@ -592,7 +592,7 @@ NrMacSchedulerOfdma::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl)
         }
 
         // ===== COMMON SLOT CSV LOG =====
-        WWriteCommonSlotCsv(GetBeamId(el), ueVectorSnapshot);
+        WriteCommonSlotCsv(GetBeamId(el), ueVectorSnapshot);
     }
 
     return symPerBeam;
