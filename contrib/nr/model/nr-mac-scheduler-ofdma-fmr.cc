@@ -836,6 +836,11 @@ NrMacSchedulerOfdmaFmr::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& active
             BeforeDlSched(ueVector.back(), FTResources(beamSym, beamSym));
         }
 
+        // Snapshot BEFORE scheduling/removal.
+        // It preserves all UEs that were eligible/active for this beam,
+        // including those that may receive zero RBG after scheduling.
+        const std::vector<UePtrAndBufferReq> ueVectorSnapshot = ueVector;
+
         const uint32_t totalRbgThisBeam = static_cast<uint32_t>(remainingRbgSet.size());
         double alphaThisBeam = alphaBaseThisSlot;
 
@@ -1102,7 +1107,7 @@ NrMacSchedulerOfdmaFmr::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& active
             reapingResources = false;
         }
 
-        WriteSlotCsv(beamId, alphaThisBeam, ueVector);
+        WriteSlotCsv(beamId, alphaThisBeam, ueVectorSnapshot);
     }
 
     ++m_slotCounter;
