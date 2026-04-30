@@ -450,6 +450,12 @@ NrMacSchedulerOfdma::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl)
             ueVector.emplace_back(ue);
             BeforeDlSched(ueVector.back(), FTResources(beamSym, beamSym));
         }
+
+        // Snapshot BEFORE scheduling/removal.
+        // Keeps all candidate UEs visible in the slot CSV,
+        // including UEs that end up with alloc=0.
+        const std::vector<UePtrAndBufferReq> ueVectorSnapshot = ueVector;
+
         bool reapingResources = true;
         while (reapingResources)
         {
@@ -586,7 +592,7 @@ NrMacSchedulerOfdma::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl)
         }
 
         // ===== COMMON SLOT CSV LOG =====
-        WriteCommonSlotCsv(GetBeamId(el), ueVector);
+        WWriteCommonSlotCsv(GetBeamId(el), ueVectorSnapshot);
     }
 
     return symPerBeam;
