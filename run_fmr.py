@@ -117,115 +117,60 @@ class Scenario:
     num_dl_flows_per_ue: int
     sim_time: str = "5s"
     udp_packet_size: int = 3000
-    profile: str = "static"
-    phase: str = "single"
-    phase_order: int = 0
     extra_ns3_args: dict[str, str] = field(default_factory=dict)
 
 
-# ==========================================================
-# MATRIZ EXPERIMENTAL
-# ==========================================================
-#
-# IMPORTANTE:
-# O binário ns3.46-fmr-compara-qos-default recebe --lambda como valor fixo
-# por execução. Portanto, enquanto o C++ não expuser um gerador ON/OFF ou
-# uma agenda temporal de lambda dentro da mesma simulação, o dinamismo dos
-# fluxos é modelado aqui como uma sequência controlada de fases de carga.
-#
-# Essa escolha é propositalmente conservadora, porque você já observou crash
-# quando lambda fica alto demais. Assim, o perfil dinâmico abaixo evita valores
-# extremos como 1200 e mantém o pico padrão em 850. Se o simulador suportar
-# mais carga com estabilidade, basta ajustar SAFE_DYNAMIC_LAMBDA_PROFILE.
-
-SAFE_MAX_LAMBDA = int(os.environ.get("FMR_SAFE_MAX_LAMBDA", "850"))
-
-# Perfil dinâmico seguro: baixa carga -> aumento -> burst -> recuperação -> novo burst.
-# Formato: (fase, lambda, fluxos DL por UE, duração).
-SAFE_DYNAMIC_LAMBDA_PROFILE = [
-    ("p01_low_load",      250,  6, "6s"),
-    ("p02_ramp_up",       450,  8, "6s"),
-    ("p03_safe_burst",    700, 10, "8s"),
-    ("p04_recovery",      350,  8, "6s"),
-    ("p05_second_burst",  850, 10, "8s"),
-]
-
-# Caso queira testar um limite superior depois, faça por variável de ambiente:
-#   FMR_SAFE_MAX_LAMBDA=900 python3 run_fmr_dynamic_experiments.py --only-scenario dynamic_p05_second_burst
-# O script corta automaticamente qualquer lambda acima de SAFE_MAX_LAMBDA.
-
-
-def cap_lambda(value: int) -> int:
-    return min(int(value), SAFE_MAX_LAMBDA)
-
-
-def build_scenarios() -> list[Scenario]:
-    scenarios: list[Scenario] = []
-
-    # 1) Referência estável. Serve como base para comparar com as fases dinâmicas.
-    scenarios.append(Scenario(
+# Matriz experimental consolidada.
+# A lógica da prova é:
+#   A) referência estável;
+#   B) competição por recurso via redução de banda;
+#   C) pressão dinâmica de fluxo/carga;
+#   D) estresse progressivo.
+SCENARIOS: list[Scenario] = [
+    Scenario(
         name="steady_reference",
-        purpose="Referência estável com carga moderada, usada como ponto base antes das fases dinâmicas.",
+        purpose="Referência com carga moderada para comparar comportamento base dos escalonadores.",
         bandwidths_mhz=[20],
         lambda_value=300,
-        num_dl_flows_per_ue=6,
-        sim_time="6s",
-        profile="static_reference",
-        phase="steady",
-        phase_order=0,
-    ))
-
-    # 2) Congestionamento por largura de banda. Mantém lambda seguro e varia BW.
-    scenarios.append(Scenario(
+        num_dl_flows_per_ue=5,
+        sim_time="5s",
+    ),
+    Scenario(
         name="congested_bw_sweep",
-        purpose="Cenário congestionado por limitação de banda; avalia robustez em 10, 20 e 50 MHz.",
+        purpose="Cenário congestionado por limitação de banda; testa robustez em 10, 20 e 50 MHz.",
         bandwidths_mhz=[10, 20, 50],
         lambda_value=600,
         num_dl_flows_per_ue=10,
-        sim_time="6s",
-        profile="bw_congestion",
-        phase="single",
-        phase_order=0,
-    ))
-
-    # 3) Perfil dinâmico por fases. Este é o bloco central para provar dinamismo dos fluxos.
-    #    Usa 10 MHz para forçar competição e 20 MHz para verificar se o comportamento se mantém.
-    for idx, (phase, lam, flows, sim_time) in enumerate(SAFE_DYNAMIC_LAMBDA_PROFILE, start=1):
-        scenarios.append(Scenario(
-            name=f"dynamic_{phase}",
-            purpose=(
-                "Fase do perfil dinâmico de tráfego: baixa carga, aumento, burst, "
-                "recuperação ou segundo burst. Usada para avaliar resposta a variações de fluxo/carga."
-            ),
-            bandwidths_mhz=[10, 20],
-            lambda_value=cap_lambda(lam),
-            num_dl_flows_per_ue=flows,
-            sim_time=sim_time,
-            profile="dynamic_flow_profile",
-            phase=phase,
-            phase_order=idx,
-        ))
-
-    # 4) Estresse controlado opcional, ainda abaixo do limite seguro por padrão.
-    scenarios.append(Scenario(
-        name="stress_safe_limit",
-        purpose="Estresse controlado no limite seguro de lambda para observar backlog, starvation e perda sem forçar crash.",
+        sim_time="5s",
+    ),
+    Scenario(
+        name="dynamic_flow_pressure",
+        purpose="Dinamismo por maior número de fluxos concorrentes e pressão temporal de tráfego.",
+        bandwidths_mhz=[10, 20],
+        lambda_value=700,
+        num_dl_flows_per_ue=15,
+        sim_time="8s",
+    ),
+    Scenario(
+        name="stress_lambda_900",
+        purpose="Estresse de carga para observar starvation, backlog e degradação de QoS.",
         bandwidths_mhz=[10],
-        lambda_value=SAFE_MAX_LAMBDA,
+        lambda_value=900,
         num_dl_flows_per_ue=10,
         sim_time="8s",
-        profile="safe_stress",
-        phase="safe_limit",
-        phase_order=99,
-    ))
+    ),
+    Scenario(
+        name="stress_lambda_1200",
+        purpose="Estresse elevado para observar o limite operacional dos escalonadores.",
+        bandwidths_mhz=[10],
+        lambda_value=1200,
+        num_dl_flows_per_ue=10,
+        sim_time="8s",
+    ),
+]
 
-    return scenarios
-
-
-SCENARIOS: list[Scenario] = build_scenarios()
-
-# Se o fmr-compara-qos passar a expor argumentos específicos de tráfego ON/OFF ou bursts,
-# adicione-os em extra_ns3_args dentro de build_scenarios(). Exemplo hipotético:
+# Se o seu fmr-compara-qos passar a expor argumentos específicos de tráfego ON/OFF ou bursts,
+# adicione-os em extra_ns3_args nos cenários acima. Exemplo hipotético:
 # extra_ns3_args={"trafficProfile": "onoff", "burstPeriod": "500ms", "offPeriod": "200ms"}
 
 
@@ -466,9 +411,6 @@ def run_all_experiments(run_dir: Path, scenarios: list[Scenario]) -> None:
                 "num_dl_flows_per_ue": s.num_dl_flows_per_ue,
                 "sim_time": s.sim_time,
                 "udp_packet_size": s.udp_packet_size,
-                "profile": s.profile,
-                "phase": s.phase,
-                "phase_order": s.phase_order,
                 "extra_ns3_args": str(s.extra_ns3_args),
             })
     meta_dir = run_dir / "00_metadata"
@@ -559,23 +501,6 @@ def summarize_flows(df_all: pd.DataFrame) -> pd.DataFrame:
         df["mode_order"] = df["mode"].map(MODE_ORDER)
         df = df.sort_values(["scenario", "bw_order", "mode_order"]).drop(columns=["bw_order", "mode_order"]).reset_index(drop=True)
     return df
-
-
-def load_scenario_metadata(run_dir: Path) -> pd.DataFrame:
-    path = run_dir / "00_metadata" / "scenario_matrix.csv"
-    if not path.exists():
-        return pd.DataFrame()
-    return pd.read_csv(path)
-
-
-def attach_scenario_metadata(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
-    if df.empty or meta.empty or "scenario" not in df.columns:
-        return df
-    cols = [c for c in ["scenario", "profile", "phase", "phase_order", "lambda", "num_dl_flows_per_ue", "sim_time"] if c in meta.columns]
-    if not cols:
-        return df
-    meta_small = meta[cols].drop_duplicates(subset=["scenario"])
-    return df.merge(meta_small, on="scenario", how="left")
 
 
 def infer_total_rbg(bw_dir: Path) -> float:
@@ -986,57 +911,6 @@ def plot_backlog(backlog_summary: pd.DataFrame, backlog_per_ue: pd.DataFrame, ou
             savefig(fig, out_dir / f"backlog_sem_atendimento_por_ue_{scenario}_{bw}.png")
 
 
-def plot_dynamic_profile_summary(flow_summary: pd.DataFrame, tradeoff: pd.DataFrame, backlog_summary: pd.DataFrame, out_root: Path) -> None:
-    """Plots across dynamic phases to support the traffic-dynamism argument.
-
-    These plots are not slot-continuous because the current ns-3 binary accepts a
-    fixed --lambda per execution. They compare the ordered phases of the same
-    dynamic traffic profile: low load, ramp-up, burst, recovery, second burst.
-    """
-    out_dir = out_root / "13_dynamic_flow_profile_phases"
-
-    def prep(df: pd.DataFrame, value_col: str) -> pd.DataFrame:
-        if df.empty or "profile" not in df.columns or value_col not in df.columns:
-            return pd.DataFrame()
-        sub = df[df["profile"] == "dynamic_flow_profile"].copy()
-        if sub.empty:
-            return sub
-        sub["phase_order"] = pd.to_numeric(sub["phase_order"], errors="coerce")
-        sub["lambda"] = pd.to_numeric(sub["lambda"], errors="coerce")
-        return sub.sort_values(["bandwidth", "mode", "phase_order"])
-
-    plots = [
-        (flow_summary, "aggregate_throughput_mbps", "Aggregate throughput (Mbps)", "dynamic_aggregate_throughput"),
-        (flow_summary, "p5_flow_throughput_mbps", "P5 flow throughput (Mbps)", "dynamic_p5_throughput"),
-        (flow_summary, "mean_delay_ms", "Mean delay (ms)", "dynamic_mean_delay"),
-        (tradeoff, "jain_rbg_slot_mean", "Mean slot-level Jain over RBG", "dynamic_jain_rbg"),
-        (backlog_summary, "pct_buf_gt0_alloc_eq0", "% buf_req > 0 and alloc = 0", "dynamic_real_starvation"),
-        (backlog_summary, "sum_buf_req_mean_per_slot", "Mean total buf_req per slot", "dynamic_backlog_load"),
-    ]
-
-    for df, value_col, ylabel, filename in plots:
-        sub = prep(df, value_col)
-        if sub.empty:
-            continue
-        for bw, bw_sub in sub.groupby("bandwidth", sort=False):
-            fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
-            for mode in [m for m in MODES if m in bw_sub["mode"].unique()]:
-                msub = bw_sub[bw_sub["mode"] == mode].sort_values("phase_order")
-                x = msub["phase_order"].to_numpy(dtype=float)
-                y = msub[value_col].to_numpy(dtype=float)
-                ax.plot(x, y, marker=MARKERS.get(mode, "o"), linewidth=LINE_WIDTH, label=label(mode), color=COLORS.get(mode))
-            phases = bw_sub.drop_duplicates("phase_order").sort_values("phase_order")
-            xticklabels = [f"{r.phase}\nλ={int(r['lambda'])}" for _, r in phases.iterrows()]
-            ax.set_xticks(phases["phase_order"].to_numpy(dtype=float))
-            ax.set_xticklabels(xticklabels)
-            ax.set_xlabel("Dynamic traffic phase")
-            ax.set_ylabel(ylabel)
-            ax.set_title(f"Dynamic traffic profile — {ylabel} — {bw}")
-            ax.grid(True, linestyle="--", alpha=GRID_ALPHA)
-            ax.legend(frameon=True)
-            savefig(fig, out_dir / f"{filename}_{bw}.png")
-
-
 def generate_all_outputs(run_dir: Path) -> None:
     setup_matplotlib()
     tables_dir = run_dir / "tables"
@@ -1044,23 +918,20 @@ def generate_all_outputs(run_dir: Path) -> None:
     tables_dir.mkdir(parents=True, exist_ok=True)
     plots_dir.mkdir(parents=True, exist_ok=True)
 
-    meta = load_scenario_metadata(run_dir)
-
     print("\n[POST] Loading flow summaries...")
     df_all_flows = load_flow_summary(run_dir)
     if df_all_flows.empty:
         raise RuntimeError("Nenhum flow_summary encontrado.")
-    flow_summary = attach_scenario_metadata(summarize_flows(df_all_flows), meta)
+    flow_summary = summarize_flows(df_all_flows)
     flow_summary.to_csv(tables_dir / "flow_comparison_long.csv", index=False)
 
     print("[POST] Loading slot data...")
     slot_data = load_slot_data(run_dir)
-    tradeoff = attach_scenario_metadata(summarize_tradeoff(flow_summary, slot_data), meta)
+    tradeoff = summarize_tradeoff(flow_summary, slot_data)
     tradeoff.to_csv(tables_dir / "tradeoff_points.csv", index=False)
 
     print("[POST] Computing backlog statistics...")
     backlog_summary, backlog_per_ue = summarize_backlog(run_dir)
-    backlog_summary = attach_scenario_metadata(backlog_summary, meta)
     backlog_summary.to_csv(tables_dir / "backlog_summary.csv", index=False)
     if not backlog_per_ue.empty:
         backlog_per_ue.to_csv(tables_dir / "backlog_per_ue.csv", index=False)
@@ -1071,7 +942,6 @@ def generate_all_outputs(run_dir: Path) -> None:
     plot_fairness_selected(slot_data, plots_dir)
     plot_zero_runs_cdf(slot_data, plots_dir)
     plot_backlog(backlog_summary, backlog_per_ue, plots_dir)
-    plot_dynamic_profile_summary(flow_summary, tradeoff, backlog_summary, plots_dir)
 
     print("\n[DONE] Tables:")
     for p in sorted(tables_dir.glob("*.csv")):
@@ -1104,11 +974,47 @@ def main() -> None:
     else:
         run_dir = BASE_DIR / "compare_runs" / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
-        scenarios = SCENARIOS
+        scenarios = [
+            Scenario(
+                name=s.name,
+                purpose=s.purpose,
+                bandwidths_mhz=list(s.bandwidths_mhz),
+                lambda_value=s.lambda_value,
+                num_dl_flows_per_ue=s.num_dl_flows_per_ue,
+                sim_time=s.sim_time,
+                udp_packet_size=s.udp_packet_size,
+                extra_ns3_args=dict(s.extra_ns3_args),
+            )
+            for s in SCENARIOS
+        ]
+
+        # Overrides por variável de ambiente. Isso garante que comandos como
+        # BW_LIST="10 20" SIM_TIME="30s" FMR_SAFE_MAX_LAMBDA=850 python3 run_fmr.py
+        # sejam respeitados pela matriz experimental inteira.
+        bw_env = os.environ.get("BW_LIST")
+        if bw_env:
+            requested_bws = [int(x) for x in bw_env.replace(",", " ").split()]
+            for s in scenarios:
+                s.bandwidths_mhz = [bw for bw in s.bandwidths_mhz if bw in requested_bws]
+            scenarios = [s for s in scenarios if s.bandwidths_mhz]
+
+        sim_time_env = os.environ.get("SIM_TIME")
+        if sim_time_env:
+            for s in scenarios:
+                s.sim_time = sim_time_env
+
+        safe_lambda_env = os.environ.get("FMR_SAFE_MAX_LAMBDA")
+        if safe_lambda_env:
+            safe_lambda = int(safe_lambda_env)
+            for s in scenarios:
+                if s.lambda_value > safe_lambda:
+                    print(f"[WARN] Capping lambda for {s.name}: {s.lambda_value} -> {safe_lambda}")
+                    s.lambda_value = safe_lambda
+
         if args.only_scenario:
-            scenarios = [s for s in SCENARIOS if s.name == args.only_scenario]
+            scenarios = [s for s in scenarios if s.name == args.only_scenario]
             if not scenarios:
-                raise ValueError(f"Cenário não encontrado: {args.only_scenario}")
+                raise ValueError(f"Cenário não encontrado ou removido pelos filtros: {args.only_scenario}")
         print(f"[INFO] RUN_ID={run_id}")
         print(f"[INFO] RUN_DIR={run_dir}")
         print(f"[INFO] BASE_DIR={BASE_DIR}")
