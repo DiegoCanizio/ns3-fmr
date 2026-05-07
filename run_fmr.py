@@ -121,51 +121,99 @@ class Scenario:
 
 
 # Matriz experimental consolidada.
-# A lógica da prova é:
-#   A) referência estável;
-#   B) competição por recurso via redução de banda;
-#   C) pressão dinâmica de fluxo/carga;
-#   D) estresse progressivo.
+#
+# Importante: o ns-3/5G-LENA está apresentando assert interno quando a carga
+# fica alta por muito tempo. Por isso, o experimento final é organizado em
+# fases curtas de carga, cujo tempo soma o SIM_TIME total desejado.
+#
+# Exemplo: SIM_TIME="30s" => 5 fases de 6s.
+# Isso preserva a lógica do dinamismo dos fluxos sem manter o simulador durante
+# uma única execução longa sujeita a crash.
+
+def _parse_bw_list() -> list[int]:
+    raw = os.environ.get("BW_LIST", "10 20")
+    out = []
+    for x in raw.replace(",", " ").split():
+        try:
+            out.append(int(x))
+        except ValueError:
+            pass
+    return out or [10, 20]
+
+
+def _parse_seconds(value: str, default: float = 30.0) -> float:
+    if not value:
+        return default
+    value = str(value).strip().lower()
+    try:
+        if value.endswith("ms"):
+            return float(value[:-2]) / 1000.0
+        if value.endswith("s"):
+            return float(value[:-1])
+        return float(value)
+    except Exception:
+        return default
+
+
+def _fmt_seconds(seconds: float) -> str:
+    if abs(seconds - round(seconds)) < 1e-9:
+        return f"{int(round(seconds))}s"
+    return f"{seconds:.3f}s"
+
+
+REQUESTED_BWS = _parse_bw_list()
+TOTAL_SIM_SECONDS = _parse_seconds(os.environ.get("SIM_TIME", "30s"), default=30.0)
+N_DYNAMIC_PHASES = 5
+PHASE_SIM_TIME = _fmt_seconds(max(2.0, TOTAL_SIM_SECONDS / N_DYNAMIC_PHASES))
+SAFE_MAX_LAMBDA = int(os.environ.get("FMR_SAFE_MAX_LAMBDA", "850"))
+
+
+def _safe_lambda(value: int) -> int:
+    return min(int(value), SAFE_MAX_LAMBDA)
+
+
+# Fases conservadoras. Ajuste aqui se o ns-3 continuar estável e você quiser
+# aumentar a pressão de tráfego.
 SCENARIOS: list[Scenario] = [
     Scenario(
-        name="steady_reference",
-        purpose="Referência com carga moderada para comparar comportamento base dos escalonadores.",
-        bandwidths_mhz=[20],
-        lambda_value=300,
+        name="dynamic_p01_low_load",
+        purpose="Fase inicial de baixa carga para referência temporal do perfil dinâmico.",
+        bandwidths_mhz=REQUESTED_BWS,
+        lambda_value=_safe_lambda(200),
+        num_dl_flows_per_ue=4,
+        sim_time=PHASE_SIM_TIME,
+    ),
+    Scenario(
+        name="dynamic_p02_ramp_up",
+        purpose="Fase de subida de carga para observar adaptação do escalonamento.",
+        bandwidths_mhz=REQUESTED_BWS,
+        lambda_value=_safe_lambda(350),
         num_dl_flows_per_ue=5,
-        sim_time="5s",
+        sim_time=PHASE_SIM_TIME,
     ),
     Scenario(
-        name="congested_bw_sweep",
-        purpose="Cenário congestionado por limitação de banda; testa robustez em 10, 20 e 50 MHz.",
-        bandwidths_mhz=[10, 20, 50],
-        lambda_value=600,
-        num_dl_flows_per_ue=10,
-        sim_time="5s",
+        name="dynamic_p03_safe_burst",
+        purpose="Rajada controlada, abaixo do limite que vinha causando crash no ns-3.",
+        bandwidths_mhz=REQUESTED_BWS,
+        lambda_value=_safe_lambda(550),
+        num_dl_flows_per_ue=6,
+        sim_time=PHASE_SIM_TIME,
     ),
     Scenario(
-        name="dynamic_flow_pressure",
-        purpose="Dinamismo por maior número de fluxos concorrentes e pressão temporal de tráfego.",
-        bandwidths_mhz=[10, 20],
-        lambda_value=700,
-        num_dl_flows_per_ue=15,
-        sim_time="8s",
+        name="dynamic_p04_recovery",
+        purpose="Fase de recuperação após rajada para medir redução de backlog/starvation.",
+        bandwidths_mhz=REQUESTED_BWS,
+        lambda_value=_safe_lambda(250),
+        num_dl_flows_per_ue=5,
+        sim_time=PHASE_SIM_TIME,
     ),
     Scenario(
-        name="stress_lambda_900",
-        purpose="Estresse de carga para observar starvation, backlog e degradação de QoS.",
-        bandwidths_mhz=[10],
-        lambda_value=900,
-        num_dl_flows_per_ue=10,
-        sim_time="8s",
-    ),
-    Scenario(
-        name="stress_lambda_1200",
-        purpose="Estresse elevado para observar o limite operacional dos escalonadores.",
-        bandwidths_mhz=[10],
-        lambda_value=1200,
-        num_dl_flows_per_ue=10,
-        sim_time="8s",
+        name="dynamic_p05_second_burst",
+        purpose="Segunda rajada controlada para avaliar robustez temporal.",
+        bandwidths_mhz=REQUESTED_BWS,
+        lambda_value=_safe_lambda(650),
+        num_dl_flows_per_ue=6,
+        sim_time=PHASE_SIM_TIME,
     ),
 ]
 
@@ -417,6 +465,9 @@ def run_all_experiments(run_dir: Path, scenarios: list[Scenario]) -> None:
     meta_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(meta_dir / "scenario_matrix.csv", index=False)
 
+    failures = []
+    continue_on_error = os.environ.get("FMR_CONTINUE_ON_ERROR", "1") not in {"0", "false", "False", "no"}
+
     for scenario in scenarios:
         print("\n" + "#" * 72)
         print(f"[SCENARIO] {scenario.name}")
@@ -424,8 +475,26 @@ def run_all_experiments(run_dir: Path, scenarios: list[Scenario]) -> None:
         print("#" * 72)
         for bw in scenario.bandwidths_mhz:
             for mode in ["rr", "pf", "mr"]:
-                run_mode(run_dir, scenario, bw, mode)
-            run_fmr_rl(run_dir, scenario, bw)
+                try:
+                    run_mode(run_dir, scenario, bw, mode)
+                except Exception as e:
+                    failures.append({"scenario": scenario.name, "bandwidth_mhz": bw, "mode": mode, "error": str(e)})
+                    print(f"[ERROR] {scenario.name} bw={bw} mode={mode}: {e}")
+                    if not continue_on_error:
+                        pd.DataFrame(failures).to_csv(meta_dir / "failed_runs.csv", index=False)
+                        raise
+            try:
+                run_fmr_rl(run_dir, scenario, bw)
+            except Exception as e:
+                failures.append({"scenario": scenario.name, "bandwidth_mhz": bw, "mode": "fmr_rl", "error": str(e)})
+                print(f"[ERROR] {scenario.name} bw={bw} mode=fmr_rl: {e}")
+                if not continue_on_error:
+                    pd.DataFrame(failures).to_csv(meta_dir / "failed_runs.csv", index=False)
+                    raise
+
+    if failures:
+        pd.DataFrame(failures).to_csv(meta_dir / "failed_runs.csv", index=False)
+        print(f"[WARN] Algumas execuções falharam. Veja: {meta_dir / 'failed_runs.csv'}")
 
 
 # ==========================================================
@@ -974,47 +1043,11 @@ def main() -> None:
     else:
         run_dir = BASE_DIR / "compare_runs" / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
-        scenarios = [
-            Scenario(
-                name=s.name,
-                purpose=s.purpose,
-                bandwidths_mhz=list(s.bandwidths_mhz),
-                lambda_value=s.lambda_value,
-                num_dl_flows_per_ue=s.num_dl_flows_per_ue,
-                sim_time=s.sim_time,
-                udp_packet_size=s.udp_packet_size,
-                extra_ns3_args=dict(s.extra_ns3_args),
-            )
-            for s in SCENARIOS
-        ]
-
-        # Overrides por variável de ambiente. Isso garante que comandos como
-        # BW_LIST="10 20" SIM_TIME="30s" FMR_SAFE_MAX_LAMBDA=850 python3 run_fmr.py
-        # sejam respeitados pela matriz experimental inteira.
-        bw_env = os.environ.get("BW_LIST")
-        if bw_env:
-            requested_bws = [int(x) for x in bw_env.replace(",", " ").split()]
-            for s in scenarios:
-                s.bandwidths_mhz = [bw for bw in s.bandwidths_mhz if bw in requested_bws]
-            scenarios = [s for s in scenarios if s.bandwidths_mhz]
-
-        sim_time_env = os.environ.get("SIM_TIME")
-        if sim_time_env:
-            for s in scenarios:
-                s.sim_time = sim_time_env
-
-        safe_lambda_env = os.environ.get("FMR_SAFE_MAX_LAMBDA")
-        if safe_lambda_env:
-            safe_lambda = int(safe_lambda_env)
-            for s in scenarios:
-                if s.lambda_value > safe_lambda:
-                    print(f"[WARN] Capping lambda for {s.name}: {s.lambda_value} -> {safe_lambda}")
-                    s.lambda_value = safe_lambda
-
+        scenarios = SCENARIOS
         if args.only_scenario:
-            scenarios = [s for s in scenarios if s.name == args.only_scenario]
+            scenarios = [s for s in SCENARIOS if s.name == args.only_scenario]
             if not scenarios:
-                raise ValueError(f"Cenário não encontrado ou removido pelos filtros: {args.only_scenario}")
+                raise ValueError(f"Cenário não encontrado: {args.only_scenario}")
         print(f"[INFO] RUN_ID={run_id}")
         print(f"[INFO] RUN_DIR={run_dir}")
         print(f"[INFO] BASE_DIR={BASE_DIR}")
