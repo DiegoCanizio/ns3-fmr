@@ -196,7 +196,7 @@ PHASE_NAMES = os.environ.get("FMR_PHASE_NAMES", "low_load,ramp_up,safe_burst,rec
 PHASE_DURATIONS = os.environ.get("FMR_PHASE_DURATIONS", "6,6,6,6,6")
 PHASE_LAMBDAS = os.environ.get("FMR_PHASE_LAMBDAS", "200,350,550,250,650")
 PHASE_FLOWS = os.environ.get("FMR_PHASE_FLOWS", "4,5,6,5,6")
-TDD_PATTERN = os.environ.get("FMR_TDD_PATTERN", "DL|DL|DL|F|UL|DL|DL|DL|F|UL|")
+TDD_PATTERN = os.environ.get("FMR_TDD_PATTERN", "DL|DL|DL|DL|UL|DL|DL|DL|DL|UL|")
 
 SCENARIOS: list[Scenario] = [
     Scenario(

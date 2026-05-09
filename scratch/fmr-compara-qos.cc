@@ -278,7 +278,7 @@ main(int argc, char* argv[])
     std::string phaseNames = "low_load,ramp_up,safe_burst,recovery,second_burst";
     std::string phaseDurations = "6,6,6,6,6";
     std::string phaseLambdas = "200,350,550,250,650";
-    std::string tddPattern = "DL|DL|DL|F|UL|DL|DL|DL|F|UL|";
+    std::string tddPattern = "DL|DL|DL|DL|UL|DL|DL|DL|DL|UL|";
     uint32_t rngSeed = 1;
     uint64_t rngRun = 1;
 
