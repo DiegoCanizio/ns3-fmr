@@ -192,20 +192,33 @@ SAFE_MAX_LAMBDA = int(os.environ.get("FMR_SAFE_MAX_LAMBDA", "850"))
 def _safe_lambda(value: int) -> int:
     return min(int(value), SAFE_MAX_LAMBDA)
 
+PHASE_NAMES = os.environ.get("FMR_PHASE_NAMES", "low_load,ramp_up,safe_burst,recovery,second_burst")
+PHASE_DURATIONS = os.environ.get("FMR_PHASE_DURATIONS", "6,6,6,6,6")
+PHASE_LAMBDAS = os.environ.get("FMR_PHASE_LAMBDAS", "200,350,550,250,650")
+PHASE_FLOWS = os.environ.get("FMR_PHASE_FLOWS", "4,5,6,5,6")
+TDD_PATTERN = os.environ.get("FMR_TDD_PATTERN", "DL|DL|DL|F|UL|DL|DL|DL|F|UL|")
+
 SCENARIOS: list[Scenario] = [
-    Scenario("dynamic_p01_low_load", "Fase inicial de baixa carga.", REQUESTED_BWS, _safe_lambda(200), 4, PHASE_SIM_TIME),
-    Scenario("dynamic_p02_ramp_up", "Fase de subida de carga.", REQUESTED_BWS, _safe_lambda(350), 5, PHASE_SIM_TIME),
-    Scenario("dynamic_p03_safe_burst", "Rajada controlada.", REQUESTED_BWS, _safe_lambda(550), 6, PHASE_SIM_TIME),
-    Scenario("dynamic_p04_recovery", "Fase de recuperação.", REQUESTED_BWS, _safe_lambda(250), 5, PHASE_SIM_TIME),
-    Scenario("dynamic_p05_second_burst", "Segunda rajada controlada.", REQUESTED_BWS, _safe_lambda(650), 6, PHASE_SIM_TIME),
+    Scenario(
+        "dynamic_continuous_30s",
+        "Cenário contínuo com cinco fases de tráfego na mesma simulação.",
+        REQUESTED_BWS,
+        _safe_lambda(200),
+        4,
+        _fmt_seconds(TOTAL_SIM_SECONDS),
+        extra_ns3_args={
+            "dynamicTraffic": "1",
+            "phaseNames": PHASE_NAMES,
+            "phaseDurations": PHASE_DURATIONS,
+            "phaseLambdas": PHASE_LAMBDAS,
+            "phaseFlows": PHASE_FLOWS,
+            "tddPattern": TDD_PATTERN,
+        },
+    ),
 ]
 
 SCENARIO_LABELS = {
-    "dynamic_p01_low_load": "Carga baixa",
-    "dynamic_p02_ramp_up": "Subida de carga",
-    "dynamic_p03_safe_burst": "Rajada controlada",
-    "dynamic_p04_recovery": "Recuperação",
-    "dynamic_p05_second_burst": "Segunda rajada",
+    "dynamic_continuous_30s": "Dinâmica contínua",
 }
 
 # ==========================================================
@@ -298,7 +311,8 @@ def base_ns3_args(run_dir: Path, scenario: Scenario, bw_mhz: int, mode: str, see
         "lambda": scenario.lambda_value,
         "udpPacketSize": scenario.udp_packet_size,
         "numDlFlowsPerUe": scenario.num_dl_flows_per_ue,
-        "RngRun": seed,
+        "rngRun": seed,
+        "rngSeed": int(os.environ.get("FMR_RNG_SEED", "1")),
         "SlotCsvPath": mode_dir / f"slot_log_{mode}.csv",
         "UeSnapshotCsvPath": mode_dir / f"ue_snapshot_{mode}.csv",
         "FlowSummaryCsvPath": mode_dir / f"flow_summary_{mode}.csv",

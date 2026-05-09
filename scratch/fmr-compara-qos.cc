@@ -15,6 +15,8 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -202,6 +204,118 @@ WriteUeSnapshotRow(std::ofstream& out,
         << dist << "\n";
 }
 
+
+static std::vector<std::string>
+SplitString(const std::string& text, char sep)
+{
+    std::vector<std::string> out;
+    std::stringstream ss(text);
+    std::string item;
+    while (std::getline(ss, item, sep))
+    {
+        item.erase(item.begin(), std::find_if(item.begin(), item.end(), [](unsigned char ch) {
+            return !std::isspace(ch);
+        }));
+        item.erase(std::find_if(item.rbegin(), item.rend(), [](unsigned char ch) {
+            return !std::isspace(ch);
+        }).base(), item.end());
+        if (!item.empty())
+        {
+            out.push_back(item);
+        }
+    }
+    return out;
+}
+
+static std::vector<uint32_t>
+ParseUintList(const std::string& text)
+{
+    std::vector<uint32_t> out;
+    for (const auto& x : SplitString(text, ','))
+    {
+        out.push_back(static_cast<uint32_t>(std::stoul(x)));
+    }
+    return out;
+}
+
+static std::vector<double>
+ParseDoubleList(const std::string& text)
+{
+    std::vector<double> out;
+    for (const auto& x : SplitString(text, ','))
+    {
+        out.push_back(std::stod(x));
+    }
+    return out;
+}
+
+struct TrafficPhase
+{
+    std::string name;
+    double startS;
+    double stopS;
+    uint32_t lambda;
+    uint32_t flowsPerUe;
+};
+
+static std::vector<TrafficPhase>
+BuildTrafficPhases(bool dynamicTraffic,
+                   double appStartS,
+                   double simStopS,
+                   uint32_t lambda,
+                   uint32_t numDlFlowsPerUe,
+                   const std::string& phaseNamesCsv,
+                   const std::string& phaseDurationsCsv,
+                   const std::string& phaseLambdasCsv,
+                   const std::string& phaseFlowsCsv)
+{
+    std::vector<TrafficPhase> phases;
+
+    if (!dynamicTraffic)
+    {
+        phases.push_back({"static", appStartS, simStopS, lambda, numDlFlowsPerUe});
+        return phases;
+    }
+
+    std::vector<std::string> names = SplitString(phaseNamesCsv, ',');
+    std::vector<double> durations = ParseDoubleList(phaseDurationsCsv);
+    std::vector<uint32_t> lambdas = ParseUintList(phaseLambdasCsv);
+    std::vector<uint32_t> flows = ParseUintList(phaseFlowsCsv);
+
+    const std::size_t n = durations.size();
+    if (n == 0 || lambdas.size() != n || flows.size() != n)
+    {
+        NS_FATAL_ERROR("Invalid dynamic traffic phases. phaseDurations, phaseLambdas and phaseFlows must have the same non-zero length.");
+    }
+    if (!names.empty() && names.size() != n)
+    {
+        NS_FATAL_ERROR("Invalid phaseNames. It must be empty or have the same length as phaseDurations.");
+    }
+
+    double t = appStartS;
+    for (std::size_t i = 0; i < n; ++i)
+    {
+        const double start = t;
+        const double stop = std::min(simStopS, t + durations[i]);
+        if (stop > start)
+        {
+            std::string name = names.empty() ? ("phase_" + std::to_string(i + 1)) : names[i];
+            phases.push_back({name, start, stop, lambdas[i], flows[i]});
+        }
+        t += durations[i];
+        if (t >= simStopS)
+        {
+            break;
+        }
+    }
+
+    if (phases.empty())
+    {
+        NS_FATAL_ERROR("No valid dynamic traffic phase was created.");
+    }
+    return phases;
+}
+
 int
 main(int argc, char* argv[])
 {
@@ -223,6 +337,15 @@ main(int argc, char* argv[])
     uint16_t dlPort = 1234;
 
     uint16_t numDlFlowsPerUe = 1;
+
+    bool dynamicTraffic = false;
+    std::string phaseNames = "low_load,ramp_up,safe_burst,recovery,second_burst";
+    std::string phaseDurations = "6,6,6,6,6";
+    std::string phaseLambdas = "200,350,550,250,650";
+    std::string phaseFlows = "4,5,6,5,6";
+    uint32_t rngSeed = 1;
+    uint32_t rngRun = 1;
+    std::string tddPattern = "DL|DL|DL|F|UL|DL|DL|DL|F|UL|";
 
     std::string schedulerMode = "rr";
     std::string positionMode = "random"; // random | fixed_profile
@@ -283,6 +406,15 @@ main(int argc, char* argv[])
     
     cmd.AddValue("numDlFlowsPerUe", "Number of DL UDP flows per UE", numDlFlowsPerUe);
 
+    cmd.AddValue("dynamicTraffic", "Enable continuous dynamic traffic phases", dynamicTraffic);
+    cmd.AddValue("phaseNames", "Comma-separated dynamic phase names", phaseNames);
+    cmd.AddValue("phaseDurations", "Comma-separated phase durations in seconds", phaseDurations);
+    cmd.AddValue("phaseLambdas", "Comma-separated UDP packet rates per phase", phaseLambdas);
+    cmd.AddValue("phaseFlows", "Comma-separated DL flows per UE per phase", phaseFlows);
+    cmd.AddValue("rngSeed", "ns-3 RNG seed", rngSeed);
+    cmd.AddValue("rngRun", "ns-3 RNG run", rngRun);
+    cmd.AddValue("tddPattern", "gNB TDD pattern", tddPattern);
+
     cmd.AddValue("scenarioRadiusMin", "Minimum UE distance from gNB (m)", scenarioRadiusMin);
     cmd.AddValue("scenarioRadiusMax", "Maximum UE distance from gNB (m)", scenarioRadiusMax);
     cmd.AddValue("bsHeight", "gNB height", bsHeight);
@@ -322,6 +454,9 @@ main(int argc, char* argv[])
    
 
     cmd.Parse(argc, argv);
+
+    RngSeedManager::SetSeed(rngSeed);
+    RngSeedManager::SetRun(rngRun);
 
     std::filesystem::create_directories(outputDir);
 
@@ -488,7 +623,10 @@ main(int argc, char* argv[])
     nrHelper->SetGnbBwpManagerAlgorithmAttribute("NGBR_LOW_LAT_EMBB", UintegerValue(bwpId));
     nrHelper->SetUeBwpManagerAlgorithmAttribute("NGBR_LOW_LAT_EMBB", UintegerValue(bwpId));
 
-    nrHelper->SetGnbPhyAttribute("Pattern", StringValue("DL|DL|DL|DL|DL|DL|DL|DL|DL|DL|"));
+    if (!tddPattern.empty())
+    {
+        nrHelper->SetGnbPhyAttribute("Pattern", StringValue(tddPattern));
+    }
 
     NetDeviceContainer gnbNetDev =
         nrHelper->InstallGnbDevice(gridScenario.GetBaseStations(), allBwps);
@@ -516,45 +654,86 @@ main(int argc, char* argv[])
     ApplicationContainer serverApps;
     ApplicationContainer clientApps;
 
-    UdpClientHelper dlClient;
-    dlClient.SetAttribute("MaxPackets", UintegerValue(0xFFFFFFFF));
-    dlClient.SetAttribute("PacketSize", UintegerValue(udpPacketSize));
-    dlClient.SetAttribute("Interval", TimeValue(Seconds(1.0 / lambda)));
+    const double appStartS = udpAppStartTime.GetSeconds();
+    const double simStopS = simTime.GetSeconds();
+    std::vector<TrafficPhase> trafficPhases = BuildTrafficPhases(dynamicTraffic,
+                                                                 appStartS,
+                                                                 simStopS,
+                                                                 lambda,
+                                                                 numDlFlowsPerUe,
+                                                                 phaseNames,
+                                                                 phaseDurations,
+                                                                 phaseLambdas,
+                                                                 phaseFlows);
+
+    std::cout << "[TRAFFIC] dynamicTraffic=" << dynamicTraffic << " phases=" << trafficPhases.size() << std::endl;
+    for (const auto& ph : trafficPhases)
+    {
+        std::cout << "[TRAFFIC] " << ph.name
+                  << " start=" << ph.startS
+                  << " stop=" << ph.stopS
+                  << " lambda=" << ph.lambda
+                  << " flowsPerUe=" << ph.flowsPerUe << std::endl;
+    }
 
     NrEpsBearer bearer(NrEpsBearer::NGBR_LOW_LAT_EMBB);
 
-    for (uint32_t i = 0; i < gridScenario.GetUserTerminals().GetN(); ++i)
-    {
-        Address ueAddress = ueIpIface.GetAddress(i);
+    uint16_t nextPort = dlPort;
+    const uint32_t nUes = gridScenario.GetUserTerminals().GetN();
 
+    for (uint32_t i = 0; i < nUes; ++i)
+    {
         Ptr<NrEpcTft> tft = Create<NrEpcTft>();
 
-        for (uint16_t f = 0; f < numDlFlowsPerUe; ++f)
+        for (uint32_t p = 0; p < trafficPhases.size(); ++p)
         {
-            uint16_t flowPort = dlPort + static_cast<uint16_t>(i * numDlFlowsPerUe + f);
+            const auto& ph = trafficPhases[p];
+            for (uint32_t f = 0; f < ph.flowsPerUe; ++f)
+            {
+                const uint16_t flowPort = nextPort++;
 
-            UdpServerHelper dlPacketSink(flowPort);
-            serverApps.Add(dlPacketSink.Install(gridScenario.GetUserTerminals().Get(i)));
-
-            dlClient.SetAttribute(
-                "Remote",
-                AddressValue(addressUtils::ConvertToSocketAddress(ueAddress, flowPort)));
-            clientApps.Add(dlClient.Install(remoteHost));
-
-            NrEpcTft::PacketFilter dlpf;
-            dlpf.localPortStart = flowPort;
-            dlpf.localPortEnd = flowPort;
-            tft->Add(dlpf);
+                NrEpcTft::PacketFilter dlpf;
+                dlpf.localPortStart = flowPort;
+                dlpf.localPortEnd = flowPort;
+                tft->Add(dlpf);
+            }
         }
 
         Ptr<NetDevice> ueDevice = ueNetDev.Get(i);
         nrHelper->ActivateDedicatedEpsBearer(ueDevice, bearer, tft);
     }
 
-    serverApps.Start(udpAppStartTime);
-    clientApps.Start(udpAppStartTime);
-    serverApps.Stop(simTime);
-    clientApps.Stop(simTime);
+    nextPort = dlPort;
+    for (uint32_t i = 0; i < nUes; ++i)
+    {
+        Address ueAddress = ueIpIface.GetAddress(i);
+
+        for (uint32_t p = 0; p < trafficPhases.size(); ++p)
+        {
+            const auto& ph = trafficPhases[p];
+            for (uint32_t f = 0; f < ph.flowsPerUe; ++f)
+            {
+                const uint16_t flowPort = nextPort++;
+
+                UdpServerHelper dlPacketSink(flowPort);
+                ApplicationContainer server = dlPacketSink.Install(gridScenario.GetUserTerminals().Get(i));
+                server.Start(Seconds(std::max(0.0, ph.startS - 0.05)));
+                server.Stop(Seconds(ph.stopS));
+                serverApps.Add(server);
+
+                UdpClientHelper dlClient;
+                dlClient.SetAttribute("MaxPackets", UintegerValue(0xFFFFFFFF));
+                dlClient.SetAttribute("PacketSize", UintegerValue(udpPacketSize));
+                dlClient.SetAttribute("Interval", TimeValue(Seconds(1.0 / static_cast<double>(ph.lambda))));
+                dlClient.SetAttribute("Remote", AddressValue(addressUtils::ConvertToSocketAddress(ueAddress, flowPort)));
+
+                ApplicationContainer client = dlClient.Install(remoteHost);
+                client.Start(Seconds(ph.startS));
+                client.Stop(Seconds(ph.stopS));
+                clientApps.Add(client);
+            }
+        }
+    }
 
     std::ofstream ueSnapshotOut;
     if (enableUeSnapshotCsv)
@@ -650,8 +829,6 @@ main(int argc, char* argv[])
     double sumFlowDelay = 0.0;
     uint32_t rxFlows = 0;
 
-    double flowDuration = (simTime - udpAppStartTime).GetSeconds();
-
     for (auto i = stats.begin(); i != stats.end(); ++i)
     {
         Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(i->first);
@@ -664,6 +841,17 @@ main(int argc, char* argv[])
         if (t.protocol == 17)
         {
             protoStream.str("UDP");
+        }
+
+        double flowDuration = (simTime - udpAppStartTime).GetSeconds();
+        if (i->second.txPackets > 1)
+        {
+            const double firstTx = i->second.timeFirstTxPacket.GetSeconds();
+            const double lastTx = i->second.timeLastTxPacket.GetSeconds();
+            if (lastTx > firstTx)
+            {
+                flowDuration = lastTx - firstTx;
+            }
         }
 
         double txOffered = i->second.txBytes * 8.0 / flowDuration / 1e6;
@@ -748,6 +936,9 @@ main(int argc, char* argv[])
               << aggregateThroughputMbps
               << " mean_flow_throughput_mbps=" << meanFlowThroughputMbps
               << " positionMode=" << positionMode
+              << " rngSeed=" << rngSeed
+              << " rngRun=" << rngRun
+              << " dynamicTraffic=" << dynamicTraffic
               << " EnableNs3Ai=" << (UsesFmr(schedulerMode) ? enableNs3Ai : false)
               << " UeSnapshotCsvPath=" << ueSnapshotCsvPath
               << " FlowSummaryCsvPath=" << flowSummaryCsvPath;
