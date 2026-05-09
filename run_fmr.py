@@ -208,10 +208,8 @@ SCENARIOS: list[Scenario] = [
         _fmt_seconds(TOTAL_SIM_SECONDS),
         extra_ns3_args={
             "dynamicTraffic": "1",
-            "phaseNames": PHASE_NAMES,
             "phaseDurations": PHASE_DURATIONS,
             "phaseLambdas": PHASE_LAMBDAS,
-            "phaseFlows": PHASE_FLOWS,
             "tddPattern": TDD_PATTERN,
         },
     ),
@@ -312,7 +310,6 @@ def base_ns3_args(run_dir: Path, scenario: Scenario, bw_mhz: int, mode: str, see
         "udpPacketSize": scenario.udp_packet_size,
         "numDlFlowsPerUe": scenario.num_dl_flows_per_ue,
         "rngRun": seed,
-        "rngSeed": int(os.environ.get("FMR_RNG_SEED", "1")),
         "SlotCsvPath": mode_dir / f"slot_log_{mode}.csv",
         "UeSnapshotCsvPath": mode_dir / f"ue_snapshot_{mode}.csv",
         "FlowSummaryCsvPath": mode_dir / f"flow_summary_{mode}.csv",
