@@ -1573,20 +1573,32 @@ def plot_appendix(slot_data: dict[tuple[int, str, str, str], dict[str, Any]], ou
 
 def write_tables(tables_dir: Path, **dfs: pd.DataFrame) -> None:
     tables_dir.mkdir(parents=True, exist_ok=True)
+
+    excel_max_rows = 1_048_576
+    xlsx_path = tables_dir / "resultados_consolidados.xlsx"
+
     for name, df in dfs.items():
         if df is None or df.empty:
             continue
+
         df.to_csv(tables_dir / f"{name}.csv", index=False)
-    # XLSX consolidado.
-    xlsx_path = tables_dir / "resultados_consolidados.xlsx"
+
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
         for name, df in dfs.items():
             if df is None or df.empty:
                 continue
+
+            if len(df) > excel_max_rows:
+                print(
+                    f"[WARN] {name} tem {len(df)} linhas. "
+                    f"Salvo apenas como CSV, não incluído no XLSX."
+                )
+                continue
+
             sheet = name[:31]
             df.to_excel(writer, sheet_name=sheet, index=False)
-    print(f"[OK] saved: {xlsx_path}")
 
+    print(f"[OK] saved: {xlsx_path}")
 
 def generate_all_outputs(run_dir: Path) -> None:
     setup_matplotlib()
