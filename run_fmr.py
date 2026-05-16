@@ -132,7 +132,7 @@ AGENT_ARGS = {
     "default-alpha": "0.80",
 }
 
-TAU_BY_BW = {10: 0.65, 20: 0.65, 50: 0.65, 100: 0.65}
+TAU_BY_BW = {10: 0.65, 20: 0.65, 30: 0.65, 40: 0.65, 50: 0.65, 100: 0.65}
 
 # Parâmetros para estimar vazão temporal a partir do slot_log.
 SCS_KHZ = float(os.environ.get("FMR_SCS_KHZ", "30"))
@@ -160,14 +160,14 @@ class Scenario:
 
 
 def _parse_bw_list() -> list[int]:
-    raw = os.environ.get("BW_LIST", "10 20")
+    raw = os.environ.get("BW_LIST", "10 20 30 40 50")
     out = []
     for x in raw.replace(",", " ").split():
         try:
             out.append(int(x))
         except ValueError:
             pass
-    return out or [10, 20]
+    return out or [10, 20, 30, 40, 50]
 
 
 def _parse_seconds(value: str, default: float = 30.0) -> float:
