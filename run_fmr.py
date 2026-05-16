@@ -938,197 +938,6 @@ def _process_one_slot_log(task: tuple[int, str, str, str, str]) -> dict[str, Any
         return None
 
 
-def _process_one_slot_log(task: tuple[int, str, str, str, str]) -> dict[str, Any] | None:
-    seed, scenario, bandwidth, mode, path_str = task
-    path = Path(path_str)
-
-    try:
-        usecols = ["time_s", "beam_id", "rnti", "buf_req", "alloc_rbg", "dl_mcs"]
-        df = pd.read_csv(path, usecols=lambda c: c in usecols, low_memory=False)
-
-        required = {"time_s", "beam_id", "rnti", "buf_req", "alloc_rbg"}
-        if not required.issubset(df.columns):
-            print(f"[WARN] colunas ausentes em {path}")
-            return None
-
-        df["buf_req"] = pd.to_numeric(df["buf_req"], errors="coerce").fillna(0.0)
-        df["alloc_rbg"] = pd.to_numeric(df["alloc_rbg"], errors="coerce").fillna(0.0)
-        df["rnti"] = pd.to_numeric(df["rnti"], errors="coerce").fillna(-1).astype(int)
-
-        if "dl_mcs" in df.columns:
-            df["dl_mcs"] = pd.to_numeric(df["dl_mcs"], errors="coerce").fillna(0).astype(int)
-            df["se"] = df["dl_mcs"].map(MCS_EFFICIENCY).fillna(0.0)
-            df["vazao_estimada_mbps"] = (
-                df["se"]
-                * df["alloc_rbg"]
-                * (12.0 * SCS_KHZ * 1000.0)
-                * CODE_RATE
-                / 1e6
-            )
-        else:
-            df["vazao_estimada_mbps"] = 0.0
-
-        slot_cols = ["time_s", "beam_id"]
-
-        slot_rnti = (
-            df.groupby(slot_cols + ["rnti"], sort=False)
-            .agg(
-                buf_req=("buf_req", "max"),
-                alloc_rbg=("alloc_rbg", "sum"),
-                vazao_estimada_mbps=("vazao_estimada_mbps", "sum"),
-            )
-            .reset_index()
-        )
-
-        all_rntis = sorted(slot_rnti["rnti"].unique())
-        n_rntis = max(1, len(all_rntis))
-
-        slot_rnti["need_service"] = slot_rnti["buf_req"] > 0
-        slot_rnti["served"] = slot_rnti["alloc_rbg"] > 0
-        slot_rnti["backlog_not_served"] = slot_rnti["need_service"] & (~slot_rnti["served"])
-
-        per_slot = (
-            slot_rnti.groupby(slot_cols, sort=False)
-            .agg(
-                backlog_total_bytes=("buf_req", "sum"),
-                ues_com_backlog=("need_service", "sum"),
-                ues_atendidos=("served", "sum"),
-                starvation_real_pct=("backlog_not_served", lambda x: float(x.mean() * 100.0)),
-                vazao_estimada_mbps=("vazao_estimada_mbps", "sum"),
-            )
-            .reset_index()
-        )
-
-        alloc_mat = (
-            slot_rnti.pivot_table(
-                index=slot_cols,
-                columns="rnti",
-                values="alloc_rbg",
-                aggfunc="sum",
-                fill_value=0.0,
-            )
-            .reindex(columns=all_rntis, fill_value=0.0)
-        )
-
-        buf_mat = (
-            slot_rnti.pivot_table(
-                index=slot_cols,
-                columns="rnti",
-                values="buf_req",
-                aggfunc="max",
-                fill_value=0.0,
-            )
-            .reindex(columns=all_rntis, fill_value=0.0)
-        )
-
-        jain_alloc = alloc_mat.apply(jain_index, axis=1)
-        jain_buf = buf_mat.apply(jain_index, axis=1)
-
-        active_ues = (alloc_mat > 0).sum(axis=1)
-        zero_fraction_per_slot = (alloc_mat <= 0).mean(axis=1)
-        zero_fraction_per_ue = (alloc_mat <= 0).mean(axis=0)
-
-        temporal_backlog = per_slot.copy()
-        temporal_backlog["seed"] = seed
-        temporal_backlog["scenario"] = scenario
-        temporal_backlog["bandwidth"] = bandwidth
-        temporal_backlog["bandwidth_mhz"] = parse_bw_name(bandwidth)
-        temporal_backlog["mode"] = mode
-        temporal_backlog["jain_backlog"] = jain_buf.values
-        temporal_backlog["jain_alocacao"] = jain_alloc.values
-
-        temporal_thr = per_slot[["time_s", "beam_id", "vazao_estimada_mbps"]].copy()
-        temporal_thr["seed"] = seed
-        temporal_thr["scenario"] = scenario
-        temporal_thr["bandwidth"] = bandwidth
-        temporal_thr["bandwidth_mhz"] = parse_bw_name(bandwidth)
-        temporal_thr["mode"] = mode
-
-        temporal_ue_thr = slot_rnti[["time_s", "beam_id", "rnti", "vazao_estimada_mbps"]].copy()
-        temporal_ue_thr["seed"] = seed
-        temporal_ue_thr["scenario"] = scenario
-        temporal_ue_thr["bandwidth"] = bandwidth
-        temporal_ue_thr["bandwidth_mhz"] = parse_bw_name(bandwidth)
-        temporal_ue_thr["mode"] = mode
-
-        per_ue = (
-            slot_rnti.groupby("rnti")
-            .agg(
-                mean_buf_req=("buf_req", "mean"),
-                max_buf_req=("buf_req", "max"),
-                mean_alloc_rbg=("alloc_rbg", "mean"),
-                pct_slots_need_service=("need_service", lambda x: float(x.mean() * 100.0)),
-                pct_slots_served=("served", lambda x: float(x.mean() * 100.0)),
-                pct_backlog_not_served=("backlog_not_served", lambda x: float(x.mean() * 100.0)),
-            )
-            .reset_index()
-        )
-        per_ue.insert(0, "mode", mode)
-        per_ue.insert(0, "bandwidth_mhz", parse_bw_name(bandwidth))
-        per_ue.insert(0, "bandwidth", bandwidth)
-        per_ue.insert(0, "scenario", scenario)
-        per_ue.insert(0, "seed", seed)
-
-        backlog_summary = pd.DataFrame([{
-            "seed": seed,
-            "scenario": scenario,
-            "bandwidth": bandwidth,
-            "bandwidth_mhz": parse_bw_name(bandwidth),
-            "mode": mode,
-            "n_slots": int(per_slot.shape[0]),
-            "n_rntis": int(n_rntis),
-            "mean_buf_req": float(slot_rnti["buf_req"].mean()),
-            "median_buf_req": float(slot_rnti["buf_req"].median()),
-            "max_buf_req": float(slot_rnti["buf_req"].max()),
-            "sum_buf_req_mean_per_slot": float(per_slot["backlog_total_bytes"].mean()),
-            "sum_buf_req_max_per_slot": float(per_slot["backlog_total_bytes"].max()),
-            "mean_backlogged_ues_per_slot": float(per_slot["ues_com_backlog"].mean()),
-            "mean_served_ues_per_slot": float(per_slot["ues_atendidos"].mean()),
-            "pct_buf_gt0_alloc_eq0": float(slot_rnti["backlog_not_served"].mean() * 100.0),
-            "pct_buf_eq0_alloc_eq0": float(((~slot_rnti["need_service"]) & (~slot_rnti["served"])).mean() * 100.0),
-            "pct_buf_gt0_alloc_gt0": float((slot_rnti["need_service"] & slot_rnti["served"]).mean() * 100.0),
-            "mean_jain_buf_req_per_slot": float(jain_buf.mean()),
-            "mean_jain_alloc_per_slot": float(jain_alloc.mean()),
-        }])
-
-        slot_summary = pd.DataFrame([{
-            "seed": seed,
-            "scenario": scenario,
-            "bandwidth": bandwidth,
-            "bandwidth_mhz": parse_bw_name(bandwidth),
-            "mode": mode,
-            "jain_rbg_slot_mean": float(jain_alloc.mean()),
-            "mean_active_ues_per_slot": float(active_ues.mean()),
-            "mean_zero_ue_percent": float(zero_fraction_per_slot.mean() * 100.0),
-        }])
-
-        slot_light = {
-            "jain": jain_alloc,
-            "active": active_ues,
-            "zero_fraction_per_slot": zero_fraction_per_slot,
-            "zero_fraction_per_ue": zero_fraction_per_ue,
-            "all_rntis": all_rntis,
-        }
-
-        del df, slot_rnti, alloc_mat, buf_mat
-        gc.collect()
-
-        return {
-            "key": (seed, scenario, bandwidth, mode),
-            "slot_summary": slot_summary,
-            "backlog_summary": backlog_summary,
-            "backlog_per_ue": per_ue,
-            "temporal_backlog": temporal_backlog,
-            "temporal_thr": temporal_thr,
-            "temporal_ue_thr": temporal_ue_thr,
-            "slot_light": slot_light,
-        }
-
-    except Exception as e:
-        print(f"[ERROR] falha processando {path}: {e}")
-        return None
-
-
 def process_slot_logs_parallel(run_dir: Path):
     tasks = []
 
@@ -1345,6 +1154,7 @@ def plot_consolidated_by_band(summary_bw: pd.DataFrame, out_root: Path) -> None:
         ax.set_xlabel("Largura de banda (MHz)")
         ax.set_ylabel(ylabel)
         ax.set_title(ylabel + " por largura de banda")
+        set_bw_ticks(ax)
         ax.grid(True, linestyle="--", alpha=GRID_ALPHA)
         ax.legend(frameon=True)
         savefig(fig, out_dir / fname)
@@ -1479,6 +1289,68 @@ def plot_backlog(backlog_summary: pd.DataFrame, out_root: Path) -> None:
         ax.grid(True, axis="y", linestyle="--", alpha=GRID_ALPHA)
         savefig(fig, out_dir / f"backlog_total_medio_{scenario}_{bw}.png")
 
+def plot_backlog_per_ue(backlog_per_ue: pd.DataFrame, out_root: Path) -> None:
+    if backlog_per_ue.empty:
+        return
+
+    out_dir = out_root / "04_backlog"
+
+    for (scenario, bw), sub in backlog_per_ue.groupby(
+        ["scenario", "bandwidth"],
+        sort=False
+    ):
+
+        # média entre seeds
+        sub_mean = (
+            sub.groupby(["rnti", "mode"], as_index=False)["mean_buf_req"]
+            .mean()
+        )
+
+        modes = [m for m in MODES if m in sub_mean["mode"].unique()]
+
+        pivot = (
+            sub_mean.pivot(
+                index="rnti",
+                columns="mode",
+                values="mean_buf_req"
+            )
+            .reindex(columns=modes)
+            .sort_index()
+        )
+
+        fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
+
+        x = np.arange(len(pivot.index))
+        width = 0.8 / max(1, len(pivot.columns))
+
+        for i, m in enumerate(pivot.columns):
+            offset = (i - (len(pivot.columns) - 1) / 2) * width
+
+            ax.bar(
+                x + offset,
+                pivot[m].values,
+                width=width,
+                label=label(m),
+                color=COLORS.get(m),
+            )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels([f"UE {r}" for r in pivot.index])
+
+        ax.set_xlabel("UE")
+        ax.set_ylabel("Backlog médio (bytes)")
+        ax.set_title(
+            f"Backlog médio por UE — "
+            f"{scenario_label(scenario)} — {bw}"
+        )
+
+        ax.grid(True, axis="y", linestyle="--", alpha=GRID_ALPHA)
+        ax.legend(frameon=True)
+
+        savefig(
+            fig,
+            out_dir / f"backlog_medio_por_ue_{scenario}_{bw}.png"
+        )
 
 def plot_temporal(temporal_backlog: pd.DataFrame, temporal_thr: pd.DataFrame, temporal_ue_thr: pd.DataFrame, out_root: Path) -> None:
     out_dir = out_root / "02_temporal"
@@ -1513,7 +1385,13 @@ def plot_temporal(temporal_backlog: pd.DataFrame, temporal_thr: pd.DataFrame, te
                 sub = sub0[sub0["mode"] == mode]
                 if sub.empty:
                     continue
-                g = sub.groupby("time_s")["vazao_estimada_mbps"].mean().sort_index()
+                g = (
+                    sub.groupby(["seed", "time_s"])["vazao_estimada_mbps"]
+                    .sum()
+                    .groupby("time_s")
+                    .mean()
+                    .sort_index()
+                )
                 ax.plot(g.index, rolling_series(g), linewidth=LINE_WIDTH, label=label(mode), color=COLORS.get(mode))
             ax.set_xlabel("Tempo de simulação (s)")
             ax.set_ylabel("Vazão estimada (Mbps)")
@@ -1530,7 +1408,13 @@ def plot_temporal(temporal_backlog: pd.DataFrame, temporal_thr: pd.DataFrame, te
                 continue
             fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
             for rnti, sub in sub0.groupby("rnti"):
-                g = sub.groupby("time_s")["vazao_estimada_mbps"].mean().sort_index()
+                g = (
+                    sub.groupby(["seed", "time_s"])["vazao_estimada_mbps"]
+                    .sum()
+                    .groupby("time_s")
+                    .mean()
+                    .sort_index()
+                )
                 ax.plot(g.index, rolling_series(g), linewidth=1.1, alpha=0.85, label=f"UE {int(rnti)}")
             ax.set_xlabel("Tempo de simulação (s)")
             ax.set_ylabel("Vazão estimada por UE (Mbps)")
@@ -1599,6 +1483,12 @@ def write_tables(tables_dir: Path, **dfs: pd.DataFrame) -> None:
             df.to_excel(writer, sheet_name=sheet, index=False)
 
     print(f"[OK] saved: {xlsx_path}")
+
+
+def set_bw_ticks(ax) -> None:
+    bw_ticks = [10, 20, 30, 40, 50]
+    ax.set_xticks(bw_ticks)
+    ax.set_xlim(min(bw_ticks) - 2, max(bw_ticks) + 2)
 
 def generate_all_outputs(run_dir: Path) -> None:
     setup_matplotlib()
@@ -1685,6 +1575,7 @@ def generate_all_outputs(run_dir: Path) -> None:
     plot_temporal(temporal_backlog, temporal_thr, temporal_ue_thr, plots_dir)
     plot_starvation(slot_data, backlog_summary, backlog_per_ue, plots_dir)
     plot_backlog(backlog_summary, plots_dir)
+    plot_backlog_per_ue(backlog_per_ue, plots_dir)
     plot_qos_bars(flow_summary, plots_dir)
 
     if os.environ.get("FMR_GENERATE_APPENDIX", "1") not in {"0", "false", "False", "no"}:
