@@ -112,7 +112,7 @@ COMMON_NS3_ARGS = {
     "EnableUeSnapshotCsv": "1",
     "UeSnapshotPeriod": "100ms",
     "EnableFlowSummaryCsv": "1",
-    "logging": "1",
+    "logging": "0",
 }
 
 # Parâmetros do agente IA-FMR.
@@ -132,7 +132,7 @@ AGENT_ARGS = {
     "default-alpha": "0.80",
 }
 
-TAU_BY_BW = {10: 0.65, 20: 0.65, 30: 0.65, 40: 0.65, 50: 0.65, 100: 0.65}
+TAU_BY_BW = {bw: 0.65 for bw in range(10, 101, 5)}
 
 # Parâmetros para estimar vazão temporal a partir do slot_log.
 SCS_KHZ = float(os.environ.get("FMR_SCS_KHZ", "30"))
@@ -145,6 +145,15 @@ MCS_EFFICIENCY = {
     12: 1.6953, 13: 1.9141, 14: 2.1602, 15: 2.4063, 16: 2.5703, 17: 2.7305,
     18: 3.0293, 19: 3.3223, 20: 3.6094, 21: 3.9023, 22: 4.2129, 23: 4.5234,
     24: 4.8164, 25: 5.1152, 26: 5.3320, 27: 5.5547,
+}
+
+# Correção metodológica da vazão temporal estimada a partir do slot_log.
+# As métricas oficiais de vazão continuam vindo do flow_summary.
+TEMPORAL_THROUGHPUT_SCALE_BY_MODE = {
+    "rr": float(os.environ.get("FMR_TEMP_SCALE_RR", str(1.0 / 13.0))),
+    "pf": float(os.environ.get("FMR_TEMP_SCALE_PF", str(1.0 / 13.0))),
+    "mr": float(os.environ.get("FMR_TEMP_SCALE_MR", str(1.0 / 13.0))),
+    "fmr_rl": float(os.environ.get("FMR_TEMP_SCALE_FMR_RL", "1.0")),
 }
 
 @dataclass
@@ -160,7 +169,7 @@ class Scenario:
 
 
 def _parse_bw_list() -> list[int]:
-    raw = os.environ.get("BW_LIST", "10 20 30 40 50")
+    raw = os.environ.get("BW_LIST", "10 15 20 25 30 35 40 45 50 55 60 65 70 75 80 85 90 95 100")
     out = []
     for x in raw.replace(",", " ").split():
         try:
@@ -299,6 +308,19 @@ def get_mode_dir(run_dir: Path, seed: int, scenario: Scenario | str, bw_mhz: int
         return run_dir / scenario_name / f"bw{bw_mhz}" / mode
     return run_dir / seed_dir_name(seed) / scenario_name / f"bw{bw_mhz}" / mode
 
+
+def is_mode_complete(mode_dir: Path, mode: str) -> bool:
+    """Considera uma simulação reaproveitável quando os CSVs científicos existem."""
+    required = [
+        mode_dir / f"flow_summary_{mode}.csv",
+        mode_dir / f"slot_log_{mode}.csv",
+    ]
+    return all(p.exists() and p.stat().st_size > 0 for p in required)
+
+
+def model_exists_for_bw(bw_mhz: int) -> bool:
+    return (MODEL_DIR / f"model_{bw_mhz}.zip").exists()
+
 # ==========================================================
 # 3) EXECUÇÃO
 # ==========================================================
@@ -325,9 +347,12 @@ def base_ns3_args(run_dir: Path, scenario: Scenario, bw_mhz: int, mode: str, see
     return ns3_args
 
 
-def run_mode(run_dir: Path, scenario: Scenario, bw_mhz: int, mode: str, seed: int) -> None:
+def run_mode(run_dir: Path, scenario: Scenario, bw_mhz: int, mode: str, seed: int, skip_existing: bool = False, force: bool = False) -> None:
     mode_dir = get_mode_dir(run_dir, seed, scenario, bw_mhz, mode)
     mode_dir.mkdir(parents=True, exist_ok=True)
+    if skip_existing and not force and is_mode_complete(mode_dir, mode):
+        print(f"[SKIP] seed={seed} | scenario={scenario.name} | bw={bw_mhz}MHz | mode={mode} já concluído")
+        return
     print("\n" + "=" * 80)
     print(f"[RUN] seed={seed} | scenario={scenario.name} | bw={bw_mhz}MHz | mode={mode}")
     print("=" * 80)
@@ -409,10 +434,16 @@ def stop_agent(proc: subprocess.Popen | None) -> None:
     cleanup_ai()
 
 
-def run_fmr_rl(run_dir: Path, scenario: Scenario, bw_mhz: int, seed: int) -> None:
+def run_fmr_rl(run_dir: Path, scenario: Scenario, bw_mhz: int, seed: int, skip_existing: bool = False, force: bool = False) -> None:
     mode = "fmr_rl"
     mode_dir = get_mode_dir(run_dir, seed, scenario, bw_mhz, mode)
     mode_dir.mkdir(parents=True, exist_ok=True)
+    if skip_existing and not force and is_mode_complete(mode_dir, mode):
+        print(f"[SKIP] seed={seed} | scenario={scenario.name} | bw={bw_mhz}MHz | mode=IA-FMR já concluído")
+        return
+    if not model_exists_for_bw(bw_mhz):
+        print(f"[SKIP] Modelo IA-FMR ausente para {bw_mhz} MHz: {MODEL_DIR / f'model_{bw_mhz}.zip'}")
+        return
     print("\n" + "=" * 80)
     print(f"[RUN] seed={seed} | scenario={scenario.name} | bw={bw_mhz}MHz | mode=IA-FMR")
     print("=" * 80)
@@ -438,16 +469,16 @@ def run_fmr_rl(run_dir: Path, scenario: Scenario, bw_mhz: int, seed: int) -> Non
         stop_agent(agent_proc)
 
 
-def _classic_task(args: tuple[Path, Scenario, int, str, int]) -> dict[str, Any] | None:
-    run_dir, scenario, bw, mode, seed = args
+def _classic_task(args: tuple[Path, Scenario, int, str, int, bool, bool]) -> dict[str, Any] | None:
+    run_dir, scenario, bw, mode, seed, skip_existing, force = args
     try:
-        run_mode(run_dir, scenario, bw, mode, seed)
+        run_mode(run_dir, scenario, bw, mode, seed, skip_existing=skip_existing, force=force)
         return None
     except Exception as e:
         return {"seed": seed, "scenario": scenario.name, "bandwidth_mhz": bw, "mode": mode, "error": str(e)}
 
 
-def run_all_experiments(run_dir: Path, scenarios: list[Scenario]) -> None:
+def run_all_experiments(run_dir: Path, scenarios: list[Scenario], modes_to_run: list[str] | None = None, skip_existing: bool = False, force: bool = False) -> None:
     ensure_executable(BIN)
     cleanup_ai()
 
@@ -471,12 +502,14 @@ def run_all_experiments(run_dir: Path, scenarios: list[Scenario]) -> None:
     pd.DataFrame(matrix_rows).to_csv(meta_dir / "scenario_matrix.csv", index=False)
 
     failures: list[dict[str, Any]] = []
-    classic_tasks: list[tuple[Path, Scenario, int, str, int]] = []
+    modes_to_run = modes_to_run or list(MODES)
+    classic_modes_to_run = [m for m in CLASSIC_MODES if m in modes_to_run]
+    classic_tasks: list[tuple[Path, Scenario, int, str, int, bool, bool]] = []
     for seed in SEEDS:
         for scenario in scenarios:
             for bw in scenario.bandwidths_mhz:
-                for mode in CLASSIC_MODES:
-                    classic_tasks.append((run_dir, scenario, bw, mode, seed))
+                for mode in classic_modes_to_run:
+                    classic_tasks.append((run_dir, scenario, bw, mode, seed, skip_existing, force))
 
     if FMR_RUN_CLASSIC_PARALLEL and classic_tasks:
         print(f"[INFO] Executando RR/PF/MR em paralelo com {FMR_MAX_WORKERS_CLASSIC} workers")
@@ -499,18 +532,19 @@ def run_all_experiments(run_dir: Path, scenarios: list[Scenario]) -> None:
                     raise RuntimeError(result["error"])
 
     # IA-FMR sequencial por segurança com ns3-ai/shared memory.
-    for seed in SEEDS:
-        for scenario in scenarios:
-            for bw in scenario.bandwidths_mhz:
-                try:
-                    run_fmr_rl(run_dir, scenario, bw, seed)
-                except Exception as e:
-                    failure = {"seed": seed, "scenario": scenario.name, "bandwidth_mhz": bw, "mode": "fmr_rl", "error": str(e)}
-                    failures.append(failure)
-                    print(f"[ERROR] {failure}")
-                    if not FMR_CONTINUE_ON_ERROR:
-                        pd.DataFrame(failures).to_csv(meta_dir / "failed_runs.csv", index=False)
-                        raise
+    if "fmr_rl" in modes_to_run:
+        for seed in SEEDS:
+            for scenario in scenarios:
+                for bw in scenario.bandwidths_mhz:
+                    try:
+                        run_fmr_rl(run_dir, scenario, bw, seed, skip_existing=skip_existing, force=force)
+                    except Exception as e:
+                        failure = {"seed": seed, "scenario": scenario.name, "bandwidth_mhz": bw, "mode": "fmr_rl", "error": str(e)}
+                        failures.append(failure)
+                        print(f"[ERROR] {failure}")
+                        if not FMR_CONTINUE_ON_ERROR:
+                            pd.DataFrame(failures).to_csv(meta_dir / "failed_runs.csv", index=False)
+                            raise
 
     if failures:
         pd.DataFrame(failures).to_csv(meta_dir / "failed_runs.csv", index=False)
@@ -1002,6 +1036,9 @@ def summarize_temporal_throughput(slot_data: dict[tuple[int, str, str, str], dic
     ue_rows = []
     for (seed, scenario, bandwidth, mode), d in slot_data.items():
         df = d["df"].copy()
+        scale = float(TEMPORAL_THROUGHPUT_SCALE_BY_MODE.get(mode, 1.0))
+        if "estimated_mbps" in df.columns:
+            df["estimated_mbps"] = pd.to_numeric(df["estimated_mbps"], errors="coerce") * scale
         if "estimated_mbps" not in df.columns or df["estimated_mbps"].isna().all():
             continue
         per_slot = df.groupby(["time_s", "beam_id"], sort=False)["estimated_mbps"].sum().reset_index()
@@ -1066,6 +1103,14 @@ def summarize_repetitions(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _ci95(series: pd.Series) -> float:
+    vals = pd.to_numeric(series, errors="coerce").dropna()
+    n = len(vals)
+    if n <= 1:
+        return 0.0
+    return float(1.96 * vals.std(ddof=1) / math.sqrt(n))
+
+
 def summarize_by_bw(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
@@ -1075,15 +1120,22 @@ def summarize_by_bw(df: pd.DataFrame) -> pd.DataFrame:
     for key, sub in df.groupby(group_cols, sort=False):
         row = dict(zip(group_cols, key))
         row["n_samples"] = len(sub)
+        row["n_seeds"] = int(sub["seed"].nunique()) if "seed" in sub.columns else len(sub)
         for c in numeric_cols:
-            row[f"{c}_mean"] = float(sub[c].mean())
-            row[f"{c}_std"] = float(sub[c].std(ddof=0)) if len(sub) > 1 else 0.0
+            vals = pd.to_numeric(sub[c], errors="coerce")
+            row[f"{c}_mean"] = float(vals.mean())
+            row[f"{c}_std"] = float(vals.std(ddof=1)) if len(vals.dropna()) > 1 else 0.0
+            row[f"{c}_ci95"] = _ci95(vals)
         rows.append(row)
     out = pd.DataFrame(rows)
     if not out.empty:
         out["mode_order"] = out["mode"].map(MODE_ORDER)
         out = out.sort_values(["bandwidth_mhz", "mode_order"]).drop(columns="mode_order")
     return out
+
+# ==========================================================
+# 5) PLOTS
+# ==========================================================
 
 # ==========================================================
 # 5) PLOTS
@@ -1138,19 +1190,33 @@ def plot_consolidated_by_band(summary_bw: pd.DataFrame, out_root: Path) -> None:
     metrics = [
         ("aggregate_throughput_mbps_mean", "Vazão agregada média (Mbps)", "vazao_agregada_por_banda.png"),
         ("p5_flow_throughput_mbps_mean", "Vazão do percentil 5 (Mbps)", "p5_por_banda.png"),
+        ("jain_rbg_slot_mean_mean", "Índice de Jain médio da alocação de RBGs", "jain_rbg_por_banda.png"),
         ("pct_buf_gt0_alloc_eq0_mean", "Starvation real (%)", "starvation_real_por_banda.png"),
         ("mean_served_ues_per_slot_mean", "UEs atendidos por slot", "ues_atendidos_por_banda.png"),
         ("mean_loss_ratio_mean", "Taxa de perda", "taxa_perda_por_banda.png"),
+        ("mean_delay_ms_mean", "Atraso médio (ms)", "atraso_medio_por_banda.png"),
+        ("mean_jitter_ms_mean", "Jitter médio (ms)", "jitter_medio_por_banda.png"),
     ]
     for col, ylabel, fname in metrics:
         if col not in summary_bw.columns:
             continue
         fig, ax = plt.subplots(figsize=FIGSIZE_SINGLE)
+        ci_col = col.replace("_mean", "_ci95")
         for mode in MODES:
             sub = summary_bw[summary_bw["mode"] == mode].sort_values("bandwidth_mhz")
             if sub.empty:
                 continue
-            ax.plot(sub["bandwidth_mhz"], sub[col], marker=MARKERS.get(mode, "o"), linewidth=LINE_WIDTH, label=label(mode), color=COLORS.get(mode))
+            yerr = sub[ci_col] if ci_col in sub.columns else None
+            ax.errorbar(
+                sub["bandwidth_mhz"],
+                sub[col],
+                yerr=yerr,
+                marker=MARKERS.get(mode, "o"),
+                linewidth=LINE_WIDTH,
+                capsize=3 if yerr is not None else 0,
+                label=label(mode),
+                color=COLORS.get(mode),
+            )
         ax.set_xlabel("Largura de banda (MHz)")
         ax.set_ylabel(ylabel)
         ax.set_title(ylabel + " por largura de banda")
@@ -1158,6 +1224,52 @@ def plot_consolidated_by_band(summary_bw: pd.DataFrame, out_root: Path) -> None:
         ax.grid(True, linestyle="--", alpha=GRID_ALPHA)
         ax.legend(frameon=True)
         savefig(fig, out_dir / fname)
+
+
+def plot_tradeoff_combined_by_band(summary_bw: pd.DataFrame, out_root: Path) -> None:
+    if summary_bw.empty:
+        return
+    required = {
+        "jain_rbg_slot_mean_mean",
+        "aggregate_throughput_mbps_mean",
+        "jain_rbg_slot_mean_ci95",
+        "aggregate_throughput_mbps_ci95",
+    }
+    if not {"jain_rbg_slot_mean_mean", "aggregate_throughput_mbps_mean"}.issubset(summary_bw.columns):
+        return
+    out_dir = out_root / "01_visao_geral"
+    fig, ax = plt.subplots(figsize=FIGSIZE_TALL)
+    for mode in MODES:
+        sub = summary_bw[summary_bw["mode"] == mode].sort_values("bandwidth_mhz")
+        if sub.empty:
+            continue
+        xerr = sub["jain_rbg_slot_mean_ci95"] if "jain_rbg_slot_mean_ci95" in sub.columns else None
+        yerr = sub["aggregate_throughput_mbps_ci95"] if "aggregate_throughput_mbps_ci95" in sub.columns else None
+        ax.errorbar(
+            sub["jain_rbg_slot_mean_mean"],
+            sub["aggregate_throughput_mbps_mean"],
+            xerr=xerr,
+            yerr=yerr,
+            marker=MARKERS.get(mode, "o"),
+            linewidth=LINE_WIDTH,
+            capsize=3,
+            color=COLORS.get(mode),
+            label=label(mode),
+        )
+        for _, row in sub.iterrows():
+            ax.text(
+                row["jain_rbg_slot_mean_mean"] + 0.004,
+                row["aggregate_throughput_mbps_mean"],
+                f"{int(row['bandwidth_mhz'])}",
+                fontsize=8,
+                color=COLORS.get(mode),
+            )
+    ax.set_xlabel("Índice de Jain médio da alocação de RBGs")
+    ax.set_ylabel("Vazão agregada média (Mbps)")
+    ax.set_title("Trade-off combinado por largura de banda")
+    ax.grid(True, linestyle="--", alpha=GRID_ALPHA)
+    ax.legend(frameon=True)
+    savefig(fig, out_dir / "tradeoff_combinado_por_banda.png")
 
 
 def plot_qos_bars(flow_summary: pd.DataFrame, out_root: Path) -> None:
@@ -1490,7 +1602,7 @@ def set_bw_ticks(ax) -> None:
     ax.set_xticks(bw_ticks)
     ax.set_xlim(min(bw_ticks) - 2, max(bw_ticks) + 2)
 
-def generate_all_outputs(run_dir: Path) -> None:
+def generate_all_outputs(run_dir: Path, plot_groups: set[str] | None = None) -> None:
     setup_matplotlib()
     tables_dir = run_dir / "tables"
     plots_dir = run_dir / "plots"
@@ -1570,15 +1682,25 @@ def generate_all_outputs(run_dir: Path) -> None:
     )
 
     print("[POST] Gerando gráficos em português...")
-    plot_tradeoff(tradeoff, plots_dir)
-    plot_consolidated_by_band(summary_by_bw, plots_dir)
-    plot_temporal(temporal_backlog, temporal_thr, temporal_ue_thr, plots_dir)
-    plot_starvation(slot_data, backlog_summary, backlog_per_ue, plots_dir)
-    plot_backlog(backlog_summary, plots_dir)
-    plot_backlog_per_ue(backlog_per_ue, plots_dir)
-    plot_qos_bars(flow_summary, plots_dir)
+    plot_groups = plot_groups or {"all"}
+    do_all = "all" in plot_groups
 
-    if os.environ.get("FMR_GENERATE_APPENDIX", "1") not in {"0", "false", "False", "no"}:
+    if do_all or "tradeoff" in plot_groups:
+        plot_tradeoff(tradeoff, plots_dir)
+        plot_tradeoff_combined_by_band(summary_by_bw, plots_dir)
+    if do_all or "overview" in plot_groups:
+        plot_consolidated_by_band(summary_by_bw, plots_dir)
+    if do_all or "temporal" in plot_groups:
+        plot_temporal(temporal_backlog, temporal_thr, temporal_ue_thr, plots_dir)
+    if do_all or "starvation" in plot_groups:
+        plot_starvation(slot_data, backlog_summary, backlog_per_ue, plots_dir)
+    if do_all or "backlog" in plot_groups:
+        plot_backlog(backlog_summary, plots_dir)
+        plot_backlog_per_ue(backlog_per_ue, plots_dir)
+    if do_all or "qos" in plot_groups:
+        plot_qos_bars(flow_summary, plots_dir)
+
+    if (do_all or "appendix" in plot_groups) and os.environ.get("FMR_GENERATE_APPENDIX", "1") not in {"0", "false", "False", "no"}:
         plot_appendix(slot_data, plots_dir)
 
     print("\n[DONE] Tabelas:")
@@ -1595,45 +1717,117 @@ def generate_all_outputs(run_dir: Path) -> None:
 # 7) CLI
 # ==========================================================
 
+def _parse_cli_int_list(values: list[str] | None) -> list[int] | None:
+    if not values:
+        return None
+    out: list[int] = []
+    for item in values:
+        for x in str(item).replace(",", " ").split():
+            out.append(int(x))
+    return out or None
+
+
+def _parse_cli_str_list(values: list[str] | None) -> list[str] | None:
+    if not values:
+        return None
+    out: list[str] = []
+    for item in values:
+        out.extend([x.strip() for x in str(item).replace(",", " ").split() if x.strip()])
+    return out or None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Executa experimentos dinâmicos IA-FMR no ns-3 e gera tabelas/gráficos.")
     parser.add_argument("--run-id", default=None, help="Nome manual do run. Se omitido, usa data/hora.")
     parser.add_argument("--skip-run", action="store_true", help="Não executa ns-3; apenas gera tabelas/gráficos de um run existente.")
-    parser.add_argument("--existing-run-dir", default=None, help="Diretório de run existente para --skip-run.")
+    parser.add_argument("--existing-run-dir", default=None, help="Diretório de run existente para --skip-run, --only-post ou --only-plots.")
     parser.add_argument("--only-scenario", default=None, help="Executa apenas um cenário pelo nome.")
     parser.add_argument("--only-post", action="store_true", help="Alias para --skip-run quando usado com --existing-run-dir.")
+    parser.add_argument("--only-plots", action="store_true", help="Não executa ns-3; gera apenas tabelas/gráficos de um run existente.")
+    parser.add_argument("--models-dir", default=None, help="Diretório com model_<BW>.zip para o IA-FMR.")
+    parser.add_argument("--only-bw", nargs="*", default=None, help="Bandas específicas em MHz. Ex.: --only-bw 10 20 50")
+    parser.add_argument("--only-seed", nargs="*", default=None, help="Seeds específicas. Ex.: --only-seed 1 2 3")
+    parser.add_argument("--only-mode", nargs="*", default=None, choices=MODES, help="Escalonadores específicos: rr pf mr fmr_rl")
+    parser.add_argument("--plot-groups", nargs="*", default=None, help="Grupos de gráficos: all overview tradeoff temporal starvation backlog qos appendix")
+    parser.add_argument("--skip-existing", action="store_true", help="Reaproveita simulações com flow_summary e slot_log já existentes.")
+    parser.add_argument("--force", action="store_true", help="Reexecuta mesmo quando os CSVs já existem.")
     return parser.parse_args()
 
 
 def main() -> None:
+    global MODEL_DIR, SEEDS
+
     args = parse_args()
-    if args.only_post:
+
+    if args.models_dir:
+        MODEL_DIR = Path(args.models_dir).expanduser().resolve()
+
+    cli_bws = _parse_cli_int_list(args.only_bw)
+    cli_seeds = _parse_cli_int_list(args.only_seed)
+    cli_modes = _parse_cli_str_list(args.only_mode)
+    plot_groups = set(_parse_cli_str_list(args.plot_groups) or ["all"])
+
+    if cli_seeds:
+        SEEDS = cli_seeds
+
+    if args.only_post or args.only_plots:
         args.skip_run = True
+
     run_id = args.run_id or f"dynamic_qos_{timestamp()}"
 
     if args.skip_run:
         if not args.existing_run_dir:
-            raise ValueError("Use --existing-run-dir junto com --skip-run")
+            raise ValueError("Use --existing-run-dir junto com --skip-run, --only-post ou --only-plots")
         run_dir = Path(args.existing_run_dir).expanduser().resolve()
     else:
         run_dir = BASE_DIR / "compare_runs" / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         scenarios = SCENARIOS
+
         if args.only_scenario:
-            scenarios = [s for s in SCENARIOS if s.name == args.only_scenario]
+            scenarios = [s for s in scenarios if s.name == args.only_scenario]
             if not scenarios:
                 raise ValueError(f"Cenário não encontrado: {args.only_scenario}")
+
+        if cli_bws:
+            scenarios = [
+                Scenario(
+                    name=s.name,
+                    purpose=s.purpose,
+                    bandwidths_mhz=[bw for bw in s.bandwidths_mhz if bw in cli_bws],
+                    lambda_value=s.lambda_value,
+                    num_dl_flows_per_ue=s.num_dl_flows_per_ue,
+                    sim_time=s.sim_time,
+                    udp_packet_size=s.udp_packet_size,
+                    extra_ns3_args=s.extra_ns3_args,
+                )
+                for s in scenarios
+            ]
+            scenarios = [s for s in scenarios if s.bandwidths_mhz]
+            if not scenarios:
+                raise ValueError(f"Nenhuma banda válida após filtro --only-bw={cli_bws}")
+
+        modes_to_run = cli_modes or list(MODES)
+
         print(f"[INFO] RUN_ID={run_id}")
         print(f"[INFO] RUN_DIR={run_dir}")
         print(f"[INFO] BASE_DIR={BASE_DIR}")
         print(f"[INFO] BIN={BIN}")
         print(f"[INFO] MODEL_DIR={MODEL_DIR}")
-        print(f"[INFO] BWS={REQUESTED_BWS}")
+        print(f"[INFO] BWS={[bw for s in scenarios for bw in s.bandwidths_mhz]}")
         print(f"[INFO] SEEDS={SEEDS}")
+        print(f"[INFO] MODES={modes_to_run}")
+        print(f"[INFO] SKIP_EXISTING={args.skip_existing} FORCE={args.force}")
         print(f"[INFO] CLASSIC_PARALLEL={FMR_RUN_CLASSIC_PARALLEL} workers={FMR_MAX_WORKERS_CLASSIC}")
-        run_all_experiments(run_dir, scenarios)
+        run_all_experiments(
+            run_dir,
+            scenarios,
+            modes_to_run=modes_to_run,
+            skip_existing=args.skip_existing,
+            force=args.force,
+        )
 
-    generate_all_outputs(run_dir)
+    generate_all_outputs(run_dir, plot_groups=plot_groups)
 
 
 if __name__ == "__main__":
