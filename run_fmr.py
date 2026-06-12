@@ -1598,8 +1598,12 @@ def write_tables(tables_dir: Path, **dfs: pd.DataFrame) -> None:
     print(f"[OK] saved: {xlsx_path}")
 
 
-def set_bw_ticks(ax) -> None:
-    bw_ticks = [10, 20, 30, 40, 50]
+def set_bw_ticks(ax, data=None) -> None:
+    if data is not None and "bandwidth_mhz" in data.columns:
+        bw_ticks = sorted(data["bandwidth_mhz"].dropna().astype(int).unique())
+    else:
+        bw_ticks = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100]
+
     ax.set_xticks(bw_ticks)
     ax.set_xlim(min(bw_ticks) - 2, max(bw_ticks) + 2)
 
