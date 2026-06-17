@@ -170,7 +170,7 @@ class Scenario:
 
 
 def _parse_bw_list() -> list[int]:
-    raw = os.environ.get("BW_LIST", "10 15 20 25 30 35 40 45 50 55 60 65 70 75 80 85 90 95 100")
+    raw = os.environ.get("BW_LIST", "100")
     out = []
     for x in raw.replace(",", " ").split():
         try:
@@ -209,8 +209,9 @@ def _safe_lambda(value: int) -> int:
 
 PHASE_NAMES = os.environ.get("FMR_PHASE_NAMES", "low_load,ramp_up,safe_burst,recovery,second_burst")
 PHASE_DURATIONS = os.environ.get("FMR_PHASE_DURATIONS", "6,6,6,6,6")
-PHASE_LAMBDAS = os.environ.get("FMR_PHASE_LAMBDAS", "200,350,550,250,650")
-PHASE_FLOWS = os.environ.get("FMR_PHASE_FLOWS", "4,5,6,5,6")
+#PHASE_LAMBDAS = os.environ.get("FMR_PHASE_LAMBDAS", "200,350,550,250,650")
+PHASE_LAMBDAS = os.environ.get("FMR_PHASE_LAMBDAS", "5,10,15,8,20")
+PHASE_FLOWS = os.environ.get("FMR_PHASE_FLOWS", "1,1,1,1,1")
 TDD_PATTERN = os.environ.get("FMR_TDD_PATTERN", "DL|DL|DL|DL|UL|DL|DL|DL|DL|UL|")
 
 SCENARIOS: list[Scenario] = [

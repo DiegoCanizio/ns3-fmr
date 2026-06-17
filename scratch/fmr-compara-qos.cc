@@ -257,7 +257,7 @@ main(int argc, char* argv[])
 {
     uint16_t gNbNum = 1;
     uint16_t ueNumPergNb = 9;
-    bool logging = true;
+    bool logging = false;
 
     Time simTime = MilliSeconds(2000);
     Time udpAppStartTime = MilliSeconds(400);
