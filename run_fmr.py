@@ -114,6 +114,8 @@ COMMON_NS3_ARGS = {
     "UeSnapshotPeriod": "100ms",
     "EnableFlowSummaryCsv": "1",
     "logging": "0",
+    "positionMode": os.environ.get("FMR_POSITION_MODE", "fixed_profile"),
+    "enableMobility": os.environ.get("FMR_ENABLE_MOBILITY", "0"),
 }
 
 # Parâmetros do agente IA-FMR.
