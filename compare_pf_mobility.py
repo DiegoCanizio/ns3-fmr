@@ -4,7 +4,7 @@ import re
 import pandas as pd
 import numpy as np
 
-CMP = Path("compare_runs/expC_pf_70mhz_mob_on_vs_off_fixedmob_same_load")
+CMP = Path("compare_runs/debug_pf_70_seed106555_mob_on_vs_off_fixed_v2")
 OUT = CMP / "comparison_outputs"
 OUT.mkdir(parents=True, exist_ok=True)
 
