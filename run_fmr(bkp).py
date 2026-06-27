@@ -168,7 +168,6 @@ class Scenario:
     num_dl_flows_per_ue: int
     sim_time: str = "5s"
     udp_packet_size: int = 3000
-    num_ues: int = 9
     extra_ns3_args: dict[str, str] = field(default_factory=dict)
 
 
@@ -181,17 +180,6 @@ def _parse_bw_list() -> list[int]:
         except ValueError:
             pass
     return out or [10, 20, 30, 40, 50]
-
-
-def _parse_ue_list() -> list[int]:
-    raw = os.environ.get("FMR_UE_COUNTS", os.environ.get("FMR_NUM_UES", "9"))
-    out: list[int] = []
-    for x in raw.replace(",", " ").split():
-        try:
-            out.append(int(x))
-        except ValueError:
-            pass
-    return out or [9]
 
 
 def _parse_seconds(value: str, default: float = 30.0) -> float:
@@ -212,7 +200,6 @@ def _fmt_seconds(seconds: float) -> str:
     return f"{seconds:.3f}s"
 
 REQUESTED_BWS = _parse_bw_list()
-REQUESTED_UES = _parse_ue_list()
 TOTAL_SIM_SECONDS = _parse_seconds(os.environ.get("SIM_TIME", "30s"), default=30.0)
 N_DYNAMIC_PHASES = 5
 PHASE_SIM_TIME = _fmt_seconds(max(2.0, TOTAL_SIM_SECONDS / N_DYNAMIC_PHASES))
@@ -229,30 +216,21 @@ PHASE_LAMBDAS = os.environ.get("FMR_PHASE_LAMBDAS", "5,10,15,8,20")
 PHASE_FLOWS = os.environ.get("FMR_PHASE_FLOWS", "1,1,1,1,1")
 TDD_PATTERN = os.environ.get("FMR_TDD_PATTERN", "DL|DL|DL|DL|UL|DL|DL|DL|DL|UL|")
 
-def _scenario_name_for_ues(n_ues: int) -> str:
-    if REQUESTED_UES == [9]:
-        return "dynamic_continuous_30s"
-    return f"dynamic_continuous_30s_ue{n_ues}"
-
-
 SCENARIOS: list[Scenario] = [
     Scenario(
-        _scenario_name_for_ues(n_ues),
-        f"Cenário contínuo com {n_ues} UEs e cinco fases de tráfego na mesma simulação.",
+        "dynamic_continuous_30s",
+        "Cenário contínuo com cinco fases de tráfego na mesma simulação.",
         REQUESTED_BWS,
         _safe_lambda(200),
         4,
         _fmt_seconds(TOTAL_SIM_SECONDS),
-        udp_packet_size=3000,
-        num_ues=n_ues,
         extra_ns3_args={
             "dynamicTraffic": "1",
             "phaseDurations": PHASE_DURATIONS,
             "phaseLambdas": PHASE_LAMBDAS,
             "tddPattern": TDD_PATTERN,
         },
-    )
-    for n_ues in REQUESTED_UES
+    ),
 ]
 
 SCENARIO_LABELS = {
@@ -293,12 +271,6 @@ def label(mode: str) -> str:
 
 
 def scenario_label(scenario: str) -> str:
-    if scenario.startswith("dynamic_continuous_30s_ue"):
-        try:
-            n_ues = scenario.split("_ue")[-1]
-            return f"Dinâmica contínua ({n_ues} UEs)"
-        except Exception:
-            return scenario
     return SCENARIO_LABELS.get(scenario, scenario)
 
 
@@ -368,7 +340,6 @@ def base_ns3_args(run_dir: Path, scenario: Scenario, bw_mhz: int, mode: str, see
         "lambda": scenario.lambda_value,
         "udpPacketSize": scenario.udp_packet_size,
         "numDlFlowsPerUe": scenario.num_dl_flows_per_ue,
-        "ueNumPergNb": scenario.num_ues,
         "rngRun": seed,
         "SlotCsvPath": mode_dir / f"slot_log_{mode}.csv",
         "UeSnapshotCsvPath": mode_dir / f"ue_snapshot_{mode}.csv",
@@ -526,7 +497,6 @@ def run_all_experiments(run_dir: Path, scenarios: list[Scenario], modes_to_run: 
                     "scenario": s.name,
                     "purpose": s.purpose,
                     "bandwidth_mhz": bw,
-                    "num_ues": s.num_ues,
                     "lambda": s.lambda_value,
                     "num_dl_flows_per_ue": s.num_dl_flows_per_ue,
                     "sim_time": s.sim_time,
@@ -1837,7 +1807,6 @@ def main() -> None:
                     num_dl_flows_per_ue=s.num_dl_flows_per_ue,
                     sim_time=s.sim_time,
                     udp_packet_size=s.udp_packet_size,
-                    num_ues=s.num_ues,
                     extra_ns3_args=s.extra_ns3_args,
                 )
                 for s in scenarios
@@ -1854,7 +1823,6 @@ def main() -> None:
         print(f"[INFO] BIN={BIN}")
         print(f"[INFO] MODEL_DIR={MODEL_DIR}")
         print(f"[INFO] BWS={[bw for s in scenarios for bw in s.bandwidths_mhz]}")
-        print(f"[INFO] UES={[s.num_ues for s in scenarios]}")
         print(f"[INFO] SEEDS={SEEDS}")
         print(f"[INFO] MODES={modes_to_run}")
         print(f"[INFO] SKIP_EXISTING={args.skip_existing} FORCE={args.force}")
