@@ -110,35 +110,90 @@ SetFixedProfilePositions(const NodeContainer& ueNodes, Ptr<Node> gnbNode, double
 }
 
 static void
+MoveExistingUeMobilityModels(NodeContainer ueNodes,
+                             double speedMin,
+                             double speedMax,
+                             double bounds,
+                             double updateSeconds,
+                             Ptr<UniformRandomVariable> speedRv,
+                             Ptr<UniformRandomVariable> angleRv)
+{
+    const double twoPi = 6.28318530717958647692;
+
+    for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
+    {
+        Ptr<MobilityModel> mm = ueNodes.Get(i)->GetObject<MobilityModel>();
+        if (!mm)
+        {
+            continue;
+        }
+
+        Vector pos = mm->GetPosition();
+
+        double speed = speedRv->GetValue(speedMin, speedMax);
+        double angle = angleRv->GetValue(0.0, twoPi);
+        double step = speed * updateSeconds;
+
+        double newX = pos.x + step * std::cos(angle);
+        double newY = pos.y + step * std::sin(angle);
+
+        if (newX < -bounds) newX = -bounds;
+        if (newX >  bounds) newX =  bounds;
+        if (newY < -bounds) newY = -bounds;
+        if (newY >  bounds) newY =  bounds;
+
+        mm->SetPosition(Vector(newX, newY, pos.z));
+    }
+
+    Simulator::Schedule(Seconds(updateSeconds),
+                        &MoveExistingUeMobilityModels,
+                        ueNodes,
+                        speedMin,
+                        speedMax,
+                        bounds,
+                        updateSeconds,
+                        speedRv,
+                        angleRv);
+}
+
+static void
 EnableRandomWalkMobility(const NodeContainer& ueNodes,
                          double speedMin,
                          double speedMax,
                          double bounds,
                          double stepDistance)
 {
-    Rectangle rect(-bounds, bounds, -bounds, bounds);
+    double updateSeconds = 1.0;
 
-    for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
+    if (speedMax > 0.0 && stepDistance > 0.0)
     {
-        Ptr<MobilityModel> mm = ueNodes.Get(i)->GetObject<MobilityModel>();
-        Vector pos(0.0, 0.0, 1.5);
-        if (mm)
-        {
-            pos = mm->GetPosition();
-        }
-
-        Ptr<RandomWalk2dMobilityModel> rw = CreateObject<RandomWalk2dMobilityModel>();
-        rw->SetAttribute("Mode", EnumValue(RandomWalk2dMobilityModel::MODE_DISTANCE));
-        rw->SetAttribute("Distance", DoubleValue(stepDistance));
-        rw->SetAttribute("Bounds", RectangleValue(rect));
-
-        std::ostringstream speedStr;
-        speedStr << "ns3::UniformRandomVariable[Min=" << speedMin << "|Max=" << speedMax << "]";
-        rw->SetAttribute("Speed", StringValue(speedStr.str()));
-
-        ueNodes.Get(i)->AggregateObject(rw);
-        rw->SetPosition(pos);
+        updateSeconds = stepDistance / speedMax;
     }
+
+    if (updateSeconds < 0.1)
+    {
+        updateSeconds = 0.1;
+    }
+
+    Ptr<UniformRandomVariable> speedRv = CreateObject<UniformRandomVariable>();
+    Ptr<UniformRandomVariable> angleRv = CreateObject<UniformRandomVariable>();
+
+    NS_LOG_UNCOND("[MOBILITY] Manual random walk enabled: speedMin="
+                  << speedMin
+                  << " speedMax=" << speedMax
+                  << " bounds=" << bounds
+                  << " stepDistance=" << stepDistance
+                  << " updateSeconds=" << updateSeconds);
+
+    Simulator::Schedule(Seconds(updateSeconds),
+                        &MoveExistingUeMobilityModels,
+                        ueNodes,
+                        speedMin,
+                        speedMax,
+                        bounds,
+                        updateSeconds,
+                        speedRv,
+                        angleRv);
 }
 
 static bool
